@@ -2,7 +2,6 @@
 
 [client]
 showErrorDetails = true
-showWarningOnDirectExecution = false
 
 [server]
 port = 8501

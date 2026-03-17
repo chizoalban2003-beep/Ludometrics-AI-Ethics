@@ -1,0 +1,22 @@
+# Streamlit Configuration for Ludomaniac Dashboard - Dark Theme
+
+[client]
+showErrorDetails = true
+showWarningOnDirectExecution = false
+
+[server]
+port = 8501
+headless = true
+runOnSave = true
+maxUploadSize = 200
+
+[logger]
+level = "info"
+
+[theme]
+base = "dark"
+primaryColor = "#FF6B6B"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#161B22"
+textColor = "#E6EDF3"
+font = "sans serif"

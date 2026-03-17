@@ -10,7 +10,8 @@ import joblib
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 
 # ============================================================================
 # PAGE CONFIG
@@ -27,12 +28,314 @@ st.set_page_config(
 # LOAD MODEL & DATA
 # ============================================================================
 
+
+@dataclass(frozen=True)
+class ProductionLudoPredictor:
+    """Thin wrapper around the shipped production artifact.
+
+    The joblib artifact is a dict containing:
+    - base_pipeline: sklearn Pipeline
+    - platt_calibrator: sklearn LogisticRegression (Platt scaling)
+    - decision_threshold: float
+    - feature_columns: ordered list of expected columns
+    """
+
+    base_pipeline: Any
+    platt_calibrator: Any
+    decision_threshold: float
+    feature_columns: list[str]
+    artifact: dict[str, Any]
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Return calibrated class probabilities [P(0), P(1)]."""
+        if X is None or len(X) == 0:
+            raise ValueError("Empty input")
+
+        # Platt calibrator expects a 2D array of decision scores.
+        if hasattr(self.base_pipeline, "decision_function"):
+            scores = self.base_pipeline.decision_function(X)
+        elif hasattr(self.base_pipeline, "predict_proba"):
+            # Fallback: use positive-class probability as a monotonic score.
+            scores = self.base_pipeline.predict_proba(X)[:, 1]
+        else:
+            raise TypeError("Base pipeline has neither decision_function nor predict_proba")
+
+        scores_2d = np.asarray(scores).reshape(-1, 1)
+        proba = self.platt_calibrator.predict_proba(scores_2d)
+        return np.asarray(proba)
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        proba = self.predict_proba(X)[:, 1]
+        return (proba >= float(self.decision_threshold)).astype(int)
+
+
+def _normalize_feature_name(name: Any) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in str(name)).strip("_").lower()
+
+
+def _engineered_col_name(f1: str, f2: str, transform_tag: str) -> str:
+    return f"eng_{transform_tag}__{_normalize_feature_name(f1)}__{_normalize_feature_name(f2)}"
+
+
+@st.cache_resource
+def _get_inference_artifacts() -> dict[str, Any]:
+    """Compute and cache artifacts needed to reproduce training-time feature engineering."""
+    df_ref = load_dataset()
+    if df_ref is None or df_ref.empty:
+        raise RuntimeError("Cannot build inference artifacts: dataset could not be loaded")
+
+    # Spearman correlation context (training-time constant, recomputed from shipped dataset)
+    excluded_for_engineering = {"Is_Winner", "Game_ID"}
+    numeric_cols = [
+        c
+        for c in df_ref.select_dtypes(include=[np.number]).columns
+        if c not in excluded_for_engineering
+    ]
+    corr = df_ref[numeric_cols].corr(method="spearman")
+
+    pairs: list[dict[str, Any]] = []
+    cols = corr.columns.tolist()
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            f1, f2 = cols[i], cols[j]
+            rho = float(corr.loc[f1, f2])
+            abs_rho = abs(rho)
+            if abs_rho >= 0.7:
+                strength = "Strong"
+            elif abs_rho >= 0.3:
+                strength = "Moderate"
+            else:
+                strength = "Weak"
+            direction = "Positive" if rho > 0 else ("Negative" if rho < 0 else "Neutral")
+            pairs.append(
+                {
+                    "feature_1": f1,
+                    "feature_2": f2,
+                    "spearman_rho": rho,
+                    "abs_rho": abs_rho,
+                    "strength": strength,
+                    "direction": direction,
+                }
+            )
+    pairwise_correlation_results = pd.DataFrame(pairs)
+
+    # Mann-Whitney U table fallback (copied from Feature_engineering.ipynb)
+    mwu_df = pd.DataFrame(
+        [
+            {"numeric_variable": "Turn", "u_value": 11662408.5, "p_value": 3.436587e-01, "significant": False},
+            {"numeric_variable": "Dice_Roll", "u_value": 11581509.0, "p_value": 1.296232e-01, "significant": False},
+            {"numeric_variable": "Token_Moved", "u_value": 10872140.5, "p_value": 1.309582e-10, "significant": True},
+            {"numeric_variable": "Position_Before", "u_value": 6805749.0, "p_value": 2.839426e-07, "significant": True},
+            {"numeric_variable": "Position_After", "u_value": 6776655.0, "p_value": 6.022537e-08, "significant": True},
+            {"numeric_variable": "Tokens_Home", "u_value": 15298936.0, "p_value": 8.448305e-135, "significant": True},
+            {"numeric_variable": "Tokens_Active", "u_value": 11102690.5, "p_value": 3.245883e-10, "significant": True},
+            {"numeric_variable": "Tokens_Finished", "u_value": 8518392.0, "p_value": 1.033559e-120, "significant": True},
+            {"numeric_variable": "Captured_Opponent", "u_value": 11715264.5, "p_value": 1.596819e-02, "significant": True},
+        ]
+    )
+    mwu_df["numeric_variable"] = mwu_df["numeric_variable"].astype(str)
+    mwu_df["u_value"] = pd.to_numeric(mwu_df["u_value"], errors="coerce")
+    mwu_df["p_value"] = pd.to_numeric(mwu_df["p_value"], errors="coerce")
+    mwu_df["significant"] = mwu_df["significant"].astype(bool)
+
+    u_valid = mwu_df["u_value"].dropna()
+    u_center = float(u_valid.median()) if not u_valid.empty else 0.0
+    u_scale = float((u_valid - u_center).abs().max()) if not u_valid.empty else 1.0
+    u_scale = u_scale if u_scale > 0 else 1.0
+
+    mwu_df["u_separation_weight"] = ((mwu_df["u_value"] - u_center).abs() / u_scale).clip(0.0, 1.0)
+    # De-emphasize non-significant variables but keep tiny contribution for stability
+    mwu_df["mwu_weight"] = np.where(mwu_df["significant"], mwu_df["u_separation_weight"], 0.15 * mwu_df["u_separation_weight"])
+
+    mwu_weight_lookup = mwu_df.set_index("numeric_variable")["mwu_weight"].to_dict()
+    significant_mwu_features = set(mwu_df.loc[mwu_df["significant"], "numeric_variable"])
+
+    return {
+        "pairwise_correlation_results": pairwise_correlation_results,
+        "mwu_weight_lookup": mwu_weight_lookup,
+        "significant_mwu_features": significant_mwu_features,
+    }
+
+
+def _engineer_features(raw_df: pd.DataFrame, artifacts: dict[str, Any]) -> pd.DataFrame:
+    """Recreate the engineered feature columns used by the production model."""
+    eps = 1e-6
+    protected_columns = {"Game_ID", "Is_Winner"}
+
+    pairwise = artifacts["pairwise_correlation_results"]
+    mwu_weight_lookup = artifacts["mwu_weight_lookup"]
+    significant_features = artifacts["significant_mwu_features"]
+
+    df_fe = raw_df.copy()
+    pending_columns: dict[str, Any] = {}
+    source_features_used: set[str] = set()
+
+    # Correlation-category engineered features
+    for _, row in pairwise.iterrows():
+        f1 = str(row["feature_1"])
+        f2 = str(row["feature_2"])
+        strength = str(row["strength"])
+        direction = str(row["direction"])
+        rho = float(row["spearman_rho"])
+
+        if rho == 0:
+            continue
+        if f1 not in df_fe.columns or f2 not in df_fe.columns:
+            continue
+
+        # Require at least one source feature to be significant by MWU
+        if (f1 not in significant_features) and (f2 not in significant_features):
+            continue
+
+        w1 = float(mwu_weight_lookup.get(f1, 0.0))
+        w2 = float(mwu_weight_lookup.get(f2, 0.0))
+        mwu_pair_weight = (w1 + w2) / 2.0
+
+        combined_weight = rho * (0.25 + 0.75 * mwu_pair_weight)
+
+        if strength == "Strong" and direction == "Positive":
+            new_col = _engineered_col_name(f1, f2, "strong_pos_div_wrho_mwu")
+            source_features_used.update([f1, f2])
+            ratio = df_fe[f1] / (df_fe[f2] + eps)
+            pending_columns[new_col] = ratio * combined_weight
+        elif strength == "Strong" and direction == "Negative":
+            new_col = _engineered_col_name(f1, f2, "strong_neg_mul_wrho_mwu")
+            source_features_used.update([f1, f2])
+            interaction = df_fe[f1] * df_fe[f2]
+            pending_columns[new_col] = interaction * combined_weight
+        elif strength == "Weak" and direction == "Negative":
+            new_col = _engineered_col_name(f1, f2, "weak_neg_combo_wrho_mwu")
+            source_features_used.update([f1, f2])
+            ratio = df_fe[f1] / (df_fe[f2] + eps)
+            safe_sqrt_term = np.sqrt(np.abs(ratio))
+            combo = (df_fe[f1] * df_fe[f2]) - (safe_sqrt_term + ratio)
+            pending_columns[new_col] = combo * combined_weight
+
+    if pending_columns:
+        df_fe = pd.concat([df_fe, pd.DataFrame(pending_columns, index=df_fe.index)], axis=1).copy()
+
+    # Drop source numeric columns used in engineering (mirrors notebook behavior)
+    drop_source_columns = sorted(
+        [col for col in source_features_used if col in df_fe.columns and col not in protected_columns]
+    )
+    if drop_source_columns:
+        df_fe = df_fe.drop(columns=drop_source_columns).copy()
+
+    # MWU post-weighting pass (floor 0.10)
+    compact_token_map = {
+        "turn": "trn",
+        "dice_roll": "dice",
+        "token_moved": "tok_mv",
+        "position_before": "pos_b",
+        "position_after": "pos_a",
+        "tokens_home": "tok_home",
+        "tokens_active": "tok_act",
+        "tokens_finished": "tok_fin",
+        "captured_opponent": "cap_opp",
+        "player_red": "ply_red",
+        "player_blue": "ply_blue",
+    }
+
+    def _compact_token(name: str) -> str:
+        return compact_token_map.get(str(name), str(name))
+
+    norm_mwu_lookup: dict[str, float] = {}
+    for k, v in mwu_weight_lookup.items():
+        k_norm = _normalize_feature_name(k)
+        norm_mwu_lookup[k_norm] = float(v)
+        norm_mwu_lookup[_compact_token(k_norm)] = float(v)
+
+    eng_cols_all = [col for col in df_fe.columns if str(col).startswith("eng_")]
+    for col in eng_cols_all:
+        parts = str(col).split("__")
+        if len(parts) < 3:
+            continue
+        f1_token = parts[1]
+        f2_token = parts[2]
+        w1 = float(norm_mwu_lookup.get(f1_token, 0.0))
+        w2 = float(norm_mwu_lookup.get(f2_token, 0.0))
+        mwu_extra = max((w1 + w2) / 2.0, 0.1)
+        df_fe[col] = df_fe[col] * mwu_extra
+
+    return df_fe
+
+
+def _prepare_model_matrix(raw_rows: pd.DataFrame, predictor: ProductionLudoPredictor) -> pd.DataFrame:
+    """Convert raw rows (base columns + Player) into the model's expected feature matrix."""
+    artifacts = _get_inference_artifacts()
+
+    df_in = raw_rows.copy()
+
+    # Ensure base numeric columns are numeric
+    for col in [
+        "Turn",
+        "Dice_Roll",
+        "Token_Moved",
+        "Position_Before",
+        "Position_After",
+        "Tokens_Home",
+        "Tokens_Active",
+        "Tokens_Finished",
+        "Captured_Opponent",
+    ]:
+        if col in df_in.columns:
+            df_in[col] = pd.to_numeric(df_in[col], errors="coerce")
+        else:
+            df_in[col] = 0.0
+
+    df_in = df_in.fillna(0.0)
+
+    # Ensure required non-numeric columns exist
+    if "Player" not in df_in.columns:
+        df_in["Player"] = "Red"
+    if "Game_ID" not in df_in.columns:
+        df_in["Game_ID"] = 0
+
+    # Build engineered feature frame
+    df_fe = _engineer_features(df_in, artifacts)
+
+    # One-hot encode Player to match training feature columns
+    dummies = pd.get_dummies(df_in["Player"].astype(str), prefix="Player")
+    for c in ["Player_Blue", "Player_Green", "Player_Red", "Player_Yellow"]:
+        if c not in dummies.columns:
+            dummies[c] = 0
+    dummies = dummies[["Player_Blue", "Player_Green", "Player_Red", "Player_Yellow"]]
+
+    # Assemble ordered model matrix
+    X = pd.DataFrame(index=df_in.index)
+    for col in predictor.feature_columns:
+        if col in df_fe.columns:
+            X[col] = pd.to_numeric(df_fe[col], errors="coerce").fillna(0.0)
+        elif col in dummies.columns:
+            X[col] = dummies[col].astype(float)
+        else:
+            X[col] = 0.0
+    return X
+
 @st.cache_resource
 def load_model():
-    """Load the pre-trained production model."""
+    """Load the pre-trained production model (wrapped)."""
     model_path = Path('jupyter_notebooks/model/production_ludo_predictor.pkl')
     if model_path.exists():
-        return joblib.load(model_path)
+        obj = joblib.load(model_path)
+        # The production artifact is a dict; wrap it into a small prediction API.
+        if isinstance(obj, dict) and isinstance(obj.get('model'), dict):
+            base_pipeline = obj['model'].get('base_pipeline')
+            platt_calibrator = obj['model'].get('platt_calibrator')
+            feature_columns = list(obj.get('feature_columns', []))
+            decision_threshold = float(obj.get('decision_threshold', 0.5))
+            if base_pipeline is None or platt_calibrator is None or not feature_columns:
+                raise ValueError('Production artifact missing base_pipeline/platt_calibrator/feature_columns')
+            return ProductionLudoPredictor(
+                base_pipeline=base_pipeline,
+                platt_calibrator=platt_calibrator,
+                decision_threshold=decision_threshold,
+                feature_columns=feature_columns,
+                artifact=obj,
+            )
+
+        # Backward-compatible: if it is already an estimator-like object.
+        return obj
     else:
         st.error(f"Model not found at {model_path}")
         return None
@@ -354,12 +657,22 @@ elif page == "📊 Dataset & EDA":
             x_is_num = _is_numeric(df_plot[x_col])
             y_is_num = _is_numeric(df_plot[y_col])
             if x_is_num and y_is_num:
+                add_trendline = st.checkbox("Add OLS trendline", value=False)
+                trend_arg = None
+                if add_trendline:
+                    try:
+                        import statsmodels.api as _sm  # noqa: F401
+                    except Exception:
+                        st.warning("OLS trendline requires `statsmodels`. Install it or uncheck the trendline option.")
+                        trend_arg = None
+                    else:
+                        trend_arg = "ols"
                 fig_bi = px.scatter(
                     df_plot,
                     x=x_col,
                     y=y_col,
                     title=f"{y_col} vs {x_col}",
-                    trendline="ols" if st.checkbox("Add OLS trendline", value=False) else None,
+                    trendline=trend_arg,
                     **facet_args,
                 )
             elif x_is_num and not y_is_num:
@@ -599,12 +912,33 @@ elif page == "🎯 Model Prediction":
     else:
         st.markdown("### Make a Prediction")
         st.markdown("Input current game features to predict the winner probability.")
-        
-        # Get feature names from model (best-effort)
-        feature_names = _get_feature_names_from_model(model)
-        if not feature_names and df is not None:
-            # fallback to numeric columns excluding target
-            feature_names = [c for c in df.select_dtypes(include=[np.number]).columns if c != 'Is_Winner']
+
+        if not isinstance(model, ProductionLudoPredictor):
+            st.error(
+                "Loaded model is not the expected production predictor wrapper. "
+                "Please ensure `jupyter_notebooks/model/production_ludo_predictor.pkl` is the shipped artifact."
+            )
+            st.stop()
+
+        if df is None:
+            st.error("Dataset could not be loaded; inference feature engineering requires the reference dataset.")
+            st.stop()
+
+        # Raw input columns (the app's cleaned dataset schema)
+        base_numeric = [
+            "Turn",
+            "Dice_Roll",
+            "Token_Moved",
+            "Position_Before",
+            "Position_After",
+            "Tokens_Home",
+            "Tokens_Active",
+            "Tokens_Finished",
+            "Captured_Opponent",
+        ]
+        player_options = sorted(df["Player"].dropna().astype(str).unique().tolist()) if "Player" in df.columns else ["Red"]
+        if not player_options:
+            player_options = ["Red", "Blue", "Green", "Yellow"]
         
         st.markdown("---")
         
@@ -613,23 +947,33 @@ elif page == "🎯 Model Prediction":
         
         if input_method == "Manual Input":
             st.subheader("Enter Game Features")
-            
+
             col1, col2 = st.columns(2)
-            feature_values = {}
-            
-            for i, feature in enumerate(feature_names):
-                col = col1 if i % 2 == 0 else col2
-                with col:
-                    feature_values[feature] = st.number_input(
-                        f"{feature}",
-                        value=0.0,
-                        step=0.1
-                    )
+            feature_values: dict[str, Any] = {}
+
+            with col1:
+                feature_values["Player"] = st.selectbox("Player", player_options, index=player_options.index("Red") if "Red" in player_options else 0)
+                feature_values["Turn"] = st.number_input("Turn", min_value=0, value=1, step=1)
+                feature_values["Dice_Roll"] = st.number_input("Dice_Roll", min_value=0, max_value=6, value=1, step=1)
+                feature_values["Token_Moved"] = st.number_input("Token_Moved", min_value=0, value=1, step=1)
+                feature_values["Captured_Opponent"] = st.number_input("Captured_Opponent", min_value=0, value=0, step=1)
+
+            with col2:
+                feature_values["Position_Before"] = st.number_input("Position_Before", min_value=0.0, value=0.0, step=1.0)
+                feature_values["Position_After"] = st.number_input("Position_After", min_value=0.0, value=0.0, step=1.0)
+                feature_values["Tokens_Home"] = st.number_input("Tokens_Home", min_value=0, value=3, step=1)
+                feature_values["Tokens_Active"] = st.number_input("Tokens_Active", min_value=0, value=1, step=1)
+                feature_values["Tokens_Finished"] = st.number_input("Tokens_Finished", min_value=0, value=0, step=1)
             
             if st.button("🎲 Predict Winner"):
-                input_df = pd.DataFrame([feature_values])
-                prediction = model.predict(input_df)[0]
-                probability = model.predict_proba(input_df)[0]
+                raw_df = pd.DataFrame([feature_values])
+                try:
+                    X_model = _prepare_model_matrix(raw_df, model)
+                    prediction = int(model.predict(X_model)[0])
+                    probability = model.predict_proba(X_model)[0]
+                except Exception as e:
+                    st.error(f"Prediction failed: {e}")
+                    st.stop()
                 
                 st.markdown("---")
                 st.subheader("🎯 Prediction Result")
@@ -644,13 +988,14 @@ elif page == "🎯 Model Prediction":
                 with col2:
                     st.metric("Winner Probability", f"{probability[1]:.1%}")
                     st.metric("Non-Winner Probability", f"{probability[0]:.1%}")
+                    st.caption(f"Decision threshold: {model.decision_threshold:.2f}")
         
         else:  # Sample Game
             st.subheader("Sample Game Scenarios")
             st.markdown("Select a sample game state to make a prediction.")
             
             # Create sample scenarios
-            if df is not None and len(feature_names) > 0:
+            if df is not None and len(base_numeric) > 0:
                 sample_options = st.selectbox(
                     "Choose a sample:",
                     ["Random from Dataset", "Winning Player Profile", "Non-Winning Player Profile"]
@@ -667,15 +1012,13 @@ elif page == "🎯 Model Prediction":
                 st.dataframe(sample_data, use_container_width=True)
                 
                 if st.button("🎲 Predict on Sample"):
-                    # Align features
-                    if feature_names and all(f in sample_data.columns for f in feature_names):
-                        X_sample = sample_data[feature_names]
-                    else:
-                        X_sample = sample_data
-                    
                     try:
-                        prediction = model.predict(X_sample)[0]
-                        probability = model.predict_proba(X_sample)[0]
+                        raw_cols = ["Game_ID", "Player"] + base_numeric
+                        present = [c for c in raw_cols if c in sample_data.columns]
+                        raw_sample = sample_data[present].copy()
+                        X_model = _prepare_model_matrix(raw_sample, model)
+                        prediction = int(model.predict(X_model)[0])
+                        probability = model.predict_proba(X_model)[0]
                         
                         st.markdown("---")
                         st.subheader("🎯 Prediction Result")
@@ -690,6 +1033,7 @@ elif page == "🎯 Model Prediction":
                         with col2:
                             st.metric("Winner Probability", f"{probability[1]:.1%}")
                             st.metric("Non-Winner Probability", f"{probability[0]:.1%}")
+                            st.caption(f"Decision threshold: {model.decision_threshold:.2f}")
                     
                     except Exception as e:
                         st.error(f"Prediction failed: {str(e)}")
@@ -725,7 +1069,13 @@ elif page == "🛠 Diagnostics":
         st.success("Model loaded.")
         try:
             st.write("Type:", type(model))
-            st.write("Feature names (detected):", _get_feature_names_from_model(model)[:50])
+            if isinstance(model, ProductionLudoPredictor):
+                st.write("Model variant:", model.artifact.get("model_variant"))
+                st.write("Decision threshold:", float(model.decision_threshold))
+                st.write("Expected feature_columns:", model.feature_columns)
+                st.write("Underlying base_pipeline type:", type(model.base_pipeline))
+            else:
+                st.write("Feature names (detected):", _get_feature_names_from_model(model)[:50])
         except Exception as e:
             st.warning(f"Could not introspect model: {e}")
 

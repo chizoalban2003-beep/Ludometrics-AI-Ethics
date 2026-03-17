@@ -13,6 +13,135 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Optional
 
+
+@st.cache_resource
+def _train_experimental_random_forest_predictor(
+    df_ref: pd.DataFrame,
+    feature_columns: tuple[str, ...],
+    random_state: int = 101,
+) -> "ProductionLudoPredictor":
+    """Train an in-app RandomForest predictor (experimental).
+
+    Uses the same engineered feature columns as the shipped production model.
+    Returns a `ProductionLudoPredictor` wrapper with Platt-style calibration and
+    an F1-optimized threshold on a held-out calibration split.
+    """
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import (
+        accuracy_score,
+        f1_score,
+        precision_score,
+        recall_score,
+        roc_auc_score,
+    )
+    from sklearn.model_selection import train_test_split
+    from sklearn.pipeline import Pipeline
+
+    if df_ref is None or len(df_ref) == 0:
+        raise ValueError("Reference dataset is empty; cannot train.")
+    if "Is_Winner" not in df_ref.columns:
+        raise ValueError("Dataset missing 'Is_Winner'; cannot train.")
+
+    base_numeric = [
+        "Turn",
+        "Dice_Roll",
+        "Token_Moved",
+        "Position_Before",
+        "Position_After",
+        "Tokens_Home",
+        "Tokens_Active",
+        "Tokens_Finished",
+        "Captured_Opponent",
+    ]
+
+    y_all = pd.to_numeric(df_ref["Is_Winner"], errors="coerce")
+    mask = y_all.notna()
+    y_all = y_all[mask].astype(int)
+
+    raw_cols = [c for c in (["Game_ID", "Player"] + base_numeric) if c in df_ref.columns]
+    raw_all = df_ref.loc[mask, raw_cols].copy()
+
+    # Reuse the existing inference-time feature engineering to build training X.
+    stub = type("_FeatureColsStub", (), {"feature_columns": list(feature_columns)})()
+    X_all = _prepare_model_matrix(raw_all, stub)
+
+    X_tmp, X_test, y_tmp, y_test = train_test_split(
+        X_all,
+        y_all,
+        test_size=0.20,
+        random_state=random_state,
+        stratify=y_all,
+    )
+    X_train, X_cal, y_train, y_cal = train_test_split(
+        X_tmp,
+        y_tmp,
+        test_size=0.25,  # 0.25 * 0.8 = 0.2
+        random_state=random_state,
+        stratify=y_tmp,
+    )
+
+    rf = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=15,
+        min_samples_split=5,
+        random_state=random_state,
+        n_jobs=-1,
+        class_weight="balanced_subsample",
+    )
+    base_pipeline = Pipeline([
+        ("model", rf),
+    ])
+    base_pipeline.fit(X_train, y_train)
+
+    # Calibrate using a logistic regression on the model score.
+    cal_scores = base_pipeline.predict_proba(X_cal)[:, 1]
+    platt = LogisticRegression(max_iter=2000, random_state=random_state)
+    platt.fit(np.asarray(cal_scores).reshape(-1, 1), y_cal)
+
+    cal_proba = platt.predict_proba(np.asarray(cal_scores).reshape(-1, 1))[:, 1]
+    thresholds = np.linspace(0.05, 0.95, 181)
+    best_thr = 0.50
+    best_f1 = -1.0
+    for thr in thresholds:
+        pred = (cal_proba >= thr).astype(int)
+        f1 = f1_score(y_cal, pred, zero_division=0)
+        if f1 > best_f1:
+            best_f1 = float(f1)
+            best_thr = float(thr)
+
+    # Compute held-out test metrics for display.
+    test_scores = base_pipeline.predict_proba(X_test)[:, 1]
+    test_proba = platt.predict_proba(np.asarray(test_scores).reshape(-1, 1))[:, 1]
+    test_pred = (test_proba >= best_thr).astype(int)
+    metrics = {
+        "accuracy": float(accuracy_score(y_test, test_pred)),
+        "precision": float(precision_score(y_test, test_pred, zero_division=0)),
+        "recall": float(recall_score(y_test, test_pred, zero_division=0)),
+        "f1": float(f1_score(y_test, test_pred, zero_division=0)),
+        "roc_auc": float(roc_auc_score(y_test, test_proba)) if len(np.unique(y_test)) > 1 else float("nan"),
+        "threshold": float(best_thr),
+        "n_train": int(len(X_train)),
+        "n_cal": int(len(X_cal)),
+        "n_test": int(len(X_test)),
+    }
+
+    artifact = {
+        "model_variant": "experimental_random_forest",
+        "decision_threshold": float(best_thr),
+        "feature_columns": list(feature_columns),
+        "metrics": metrics,
+        "notes": "Trained in-app from the current dataset using engineered features; not the shipped production model.",
+    }
+
+    return ProductionLudoPredictor(
+        base_pipeline=base_pipeline,
+        platt_calibrator=platt,
+        decision_threshold=float(best_thr),
+        feature_columns=list(feature_columns),
+        artifact=artifact,
+    )
+
 # ============================================================================
 # PAGE CONFIG
 # ============================================================================
@@ -327,32 +456,122 @@ def _show_model_inputs(X_model: pd.DataFrame) -> None:
             st.dataframe(X_model, use_container_width=True)
 
 @st.cache_resource
-def load_model():
-    """Load the pre-trained production model (wrapped)."""
-    model_path = Path('jupyter_notebooks/model/production_ludo_predictor.pkl')
-    if model_path.exists():
-        obj = joblib.load(model_path)
-        # The production artifact is a dict; wrap it into a small prediction API.
-        if isinstance(obj, dict) and isinstance(obj.get('model'), dict):
-            base_pipeline = obj['model'].get('base_pipeline')
-            platt_calibrator = obj['model'].get('platt_calibrator')
-            feature_columns = list(obj.get('feature_columns', []))
-            decision_threshold = float(obj.get('decision_threshold', 0.5))
-            if base_pipeline is None or platt_calibrator is None or not feature_columns:
-                raise ValueError('Production artifact missing base_pipeline/platt_calibrator/feature_columns')
-            return ProductionLudoPredictor(
-                base_pipeline=base_pipeline,
-                platt_calibrator=platt_calibrator,
-                decision_threshold=decision_threshold,
-                feature_columns=feature_columns,
-                artifact=obj,
-            )
+def _load_model_artifact():
+    """Load the legacy GB production artifact from disk.
 
-        # Backward-compatible: if it is already an estimator-like object.
-        return obj
-    else:
-        st.error(f"Model not found at {model_path}")
+    NOTE: Kept for backward compatibility. New code should prefer
+    `_load_model_artifact_from_path()` so the primary model can switch between
+    the tuned RF artifact and the GB fallback.
+
+    Cached separately from `load_model()` to avoid caching a custom class instance.
+    Streamlit hot-reloads can redefine classes, making `isinstance()` checks fail
+    if the cached value is an old instance.
+    """
+    model_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    if not model_path.exists():
         return None
+    return joblib.load(model_path)
+
+
+@st.cache_resource
+def _load_model_artifact_from_path(model_path_str: str):
+    """Load a joblib artifact from an arbitrary path (cached)."""
+    model_path = Path(model_path_str)
+    if not model_path.exists():
+        return None
+    return joblib.load(model_path)
+
+
+def _wrap_production_artifact(obj: Any) -> Any:
+    """Wrap dict artifacts into `ProductionLudoPredictor` when possible."""
+    if isinstance(obj, dict) and isinstance(obj.get("model"), dict):
+        base_pipeline = obj["model"].get("base_pipeline")
+        platt_calibrator = obj["model"].get("platt_calibrator")
+        feature_columns = list(obj.get("feature_columns", []))
+        decision_threshold = float(obj.get("decision_threshold", 0.5))
+        if base_pipeline is None or platt_calibrator is None or not feature_columns:
+            raise ValueError("Production artifact missing base_pipeline/platt_calibrator/feature_columns")
+        return ProductionLudoPredictor(
+            base_pipeline=base_pipeline,
+            platt_calibrator=platt_calibrator,
+            decision_threshold=decision_threshold,
+            feature_columns=feature_columns,
+            artifact=obj,
+        )
+    return obj
+
+
+def load_model():
+    """Load the primary production model (wrapped).
+
+    Preference order:
+    1) `jupyter_notebooks/model/production_rf_predictor.pkl` (tuned RF; primary)
+    2) `jupyter_notebooks/model/production_ludo_predictor.pkl` (legacy tuned GB; fallback)
+
+    Returns a fresh `ProductionLudoPredictor` wrapper each run.
+    """
+    rf_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
+    gb_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    primary_path = rf_path if rf_path.exists() else gb_path
+
+    obj = _load_model_artifact_from_path(str(primary_path))
+    if obj is None:
+        st.error(
+            "No production model artifact found. Expected one of: "
+            "jupyter_notebooks/model/production_rf_predictor.pkl (preferred) or "
+            "jupyter_notebooks/model/production_ludo_predictor.pkl (fallback)."
+        )
+        return None
+
+    return _wrap_production_artifact(obj)
+
+
+def load_production_model_from_path(model_path: Path):
+    """Load a production artifact from a specific file path and wrap if needed."""
+    obj = _load_model_artifact_from_path(str(model_path))
+    if obj is None:
+        return None
+    return _wrap_production_artifact(obj)
+
+
+def _infer_final_estimator_name(predictor: ProductionLudoPredictor) -> str:
+    try:
+        bp = predictor.base_pipeline
+        if hasattr(bp, "steps") and bp.steps:
+            return type(bp.steps[-1][1]).__name__
+        return type(bp).__name__
+    except Exception:
+        return "Unknown"
+
+
+def _extract_test_metrics(predictor: ProductionLudoPredictor) -> Optional[dict[str, Any]]:
+    """Best-effort extraction of test metrics from a predictor artifact."""
+    if not isinstance(predictor, ProductionLudoPredictor):
+        return None
+    if not isinstance(predictor.artifact, dict):
+        return None
+
+    metrics = predictor.artifact.get("metrics")
+    if isinstance(metrics, dict) and isinstance(metrics.get("test"), dict):
+        return metrics["test"]
+    if isinstance(metrics, dict):
+        return metrics
+    return None
+
+
+def _export_predictor_artifact(predictor: ProductionLudoPredictor, export_path: Path) -> None:
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact = dict(predictor.artifact) if isinstance(predictor.artifact, dict) else {}
+    # Ensure required fields exist.
+    artifact["decision_threshold"] = float(predictor.decision_threshold)
+    artifact["feature_columns"] = list(predictor.feature_columns)
+    artifact["model"] = {
+        "base_pipeline": predictor.base_pipeline,
+        "platt_calibrator": predictor.platt_calibrator,
+    }
+    artifact.setdefault("created_at_utc", pd.Timestamp.utcnow().isoformat())
+    artifact["exported_at_utc"] = pd.Timestamp.utcnow().isoformat()
+    joblib.dump(artifact, export_path)
 
 @st.cache_data
 def load_dataset():
@@ -506,7 +725,7 @@ if page == "🏠 Overview":
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown("### 4️⃣ **Model Training**\nTrain & tune Gradient Boosting\nwith constrained optimization")
+        st.markdown("### 4️⃣ **Model Training**\nTrain & tune Random Forest\nwith constrained optimization")
     with col2:
         st.markdown("→")
     with col3:
@@ -930,13 +1149,61 @@ elif page == "🎯 Model Prediction":
         if not isinstance(model, ProductionLudoPredictor):
             st.error(
                 "Loaded model is not the expected production predictor wrapper. "
-                "Please ensure `jupyter_notebooks/model/production_ludo_predictor.pkl` is the shipped artifact."
+                "Expected a production artifact at jupyter_notebooks/model/production_rf_predictor.pkl (preferred) "
+                "or jupyter_notebooks/model/production_ludo_predictor.pkl (fallback)."
             )
             st.stop()
 
         if df is None:
             st.error("Dataset could not be loaded; inference feature engineering requires the reference dataset.")
             st.stop()
+
+        st.markdown("---")
+        rf_prod_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
+        gb_prod_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+
+        prod_rf = load_production_model_from_path(rf_prod_path) if rf_prod_path.exists() else None
+        prod_gb = load_production_model_from_path(gb_prod_path) if gb_prod_path.exists() else None
+
+        options: list[str] = []
+        if isinstance(prod_rf, ProductionLudoPredictor):
+            options.append("Production RF (Primary)")
+        if isinstance(prod_gb, ProductionLudoPredictor):
+            options.append("Production GB (Fallback)")
+        options.append("Experimental RF (Train In-App)")
+
+        default_choice = "Production RF (Primary)" if "Production RF (Primary)" in options else options[0]
+        model_choice = st.selectbox(
+            "Choose model",
+            options,
+            index=options.index(default_choice),
+            help=(
+                "Production RF is the primary estimator when the saved RF artifact exists. "
+                "Production GB is the legacy fallback. Experimental RF trains from the current dataset (cached)."
+            ),
+        )
+
+        if model_choice == "Production RF (Primary)":
+            if not isinstance(prod_rf, ProductionLudoPredictor):
+                st.error("Saved RF artifact not found. Expected at jupyter_notebooks/model/production_rf_predictor.pkl")
+                st.stop()
+            active_model = prod_rf
+        elif model_choice == "Production GB (Fallback)":
+            if not isinstance(prod_gb, ProductionLudoPredictor):
+                st.error("Saved GB artifact not found. Expected at jupyter_notebooks/model/production_ludo_predictor.pkl")
+                st.stop()
+            active_model = prod_gb
+        else:
+            with st.spinner("Training experimental Random Forest (cached)…"):
+                active_model = _train_experimental_random_forest_predictor(df, tuple(model.feature_columns))
+            st.info("Using Experimental Random Forest. Metrics are computed on a held-out split from the current dataset.")
+
+        if isinstance(active_model, ProductionLudoPredictor):
+            st.caption(
+                f"Active model: {active_model.artifact.get('model_variant', 'unknown')} | "
+                f"Estimator: {_infer_final_estimator_name(active_model)} | "
+                f"Threshold: {active_model.decision_threshold:.2f}"
+            )
 
         # Raw input columns (the app's cleaned dataset schema)
         base_numeric = [
@@ -982,9 +1249,9 @@ elif page == "🎯 Model Prediction":
             if st.button("🎲 Predict Winner"):
                 raw_df = pd.DataFrame([feature_values])
                 try:
-                    X_model = _prepare_model_matrix(raw_df, model)
-                    prediction = int(model.predict(X_model)[0])
-                    probability = model.predict_proba(X_model)[0]
+                    X_model = _prepare_model_matrix(raw_df, active_model)
+                    prediction = int(active_model.predict(X_model)[0])
+                    probability = active_model.predict_proba(X_model)[0]
                 except Exception as e:
                     st.error(f"Prediction failed: {e}")
                     st.stop()
@@ -1002,7 +1269,7 @@ elif page == "🎯 Model Prediction":
                 with col2:
                     st.metric("Winner Probability", f"{probability[1]:.1%}")
                     st.metric("Non-Winner Probability", f"{probability[0]:.1%}")
-                    st.caption(f"Decision threshold: {model.decision_threshold:.2f}")
+                    st.caption(f"Decision threshold: {active_model.decision_threshold:.2f}")
 
                 _show_model_inputs(X_model)
         
@@ -1032,9 +1299,9 @@ elif page == "🎯 Model Prediction":
                         raw_cols = ["Game_ID", "Player"] + base_numeric
                         present = [c for c in raw_cols if c in sample_data.columns]
                         raw_sample = sample_data[present].copy()
-                        X_model = _prepare_model_matrix(raw_sample, model)
-                        prediction = int(model.predict(X_model)[0])
-                        probability = model.predict_proba(X_model)[0]
+                        X_model = _prepare_model_matrix(raw_sample, active_model)
+                        prediction = int(active_model.predict(X_model)[0])
+                        probability = active_model.predict_proba(X_model)[0]
                         
                         st.markdown("---")
                         st.subheader("🎯 Prediction Result")
@@ -1049,7 +1316,7 @@ elif page == "🎯 Model Prediction":
                         with col2:
                             st.metric("Winner Probability", f"{probability[1]:.1%}")
                             st.metric("Non-Winner Probability", f"{probability[0]:.1%}")
-                            st.caption(f"Decision threshold: {model.decision_threshold:.2f}")
+                            st.caption(f"Decision threshold: {active_model.decision_threshold:.2f}")
 
                         _show_model_inputs(X_model)
                     
@@ -1065,6 +1332,18 @@ elif page == "🎯 Model Prediction":
 elif page == "🛠 Diagnostics":
     st.title("🛠 Diagnostics")
     st.markdown("Useful checks for debugging data/model loading and common runtime issues.")
+
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        if st.button("Clear Streamlit caches"):
+            try:
+                st.cache_data.clear()
+                st.cache_resource.clear()
+            except Exception:
+                pass
+            st.rerun()
+    with col_b:
+        st.caption("Use this if model wrapping looks stale after code changes.")
 
     st.subheader("Data")
     if df is None:
@@ -1092,10 +1371,42 @@ elif page == "🛠 Diagnostics":
                 st.write("Decision threshold:", float(model.decision_threshold))
                 st.write("Expected feature_columns:", model.feature_columns)
                 st.write("Underlying base_pipeline type:", type(model.base_pipeline))
+                st.write("Final estimator:", _infer_final_estimator_name(model))
             else:
                 st.write("Feature names (detected):", _get_feature_names_from_model(model)[:50])
         except Exception as e:
             st.warning(f"Could not introspect model: {e}")
+
+    st.subheader("Model Artifacts")
+    gb_export_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
+    rf_export_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
+    st.write(
+        {
+            "production_ludo_predictor.pkl exists": Path("jupyter_notebooks/model/production_ludo_predictor.pkl").exists(),
+            "production_gb_predictor.pkl exists": gb_export_path.exists(),
+            "production_rf_predictor.pkl exists": rf_export_path.exists(),
+        }
+    )
+
+    if isinstance(model, ProductionLudoPredictor) and df is not None:
+        with st.expander("Export / Save models", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Export current production model as production_gb_predictor.pkl"):
+                    try:
+                        _export_predictor_artifact(model, gb_export_path)
+                        st.success(f"Saved: {gb_export_path}")
+                    except Exception as e:
+                        st.error(f"Export failed: {e}")
+            with col2:
+                if st.button("Train + export RF as production_rf_predictor.pkl"):
+                    try:
+                        with st.spinner("Training RF (cached) and exporting…"):
+                            rf_pred = _train_experimental_random_forest_predictor(df, tuple(model.feature_columns))
+                        _export_predictor_artifact(rf_pred, rf_export_path)
+                        st.success(f"Saved: {rf_export_path}")
+                    except Exception as e:
+                        st.error(f"Train/export failed: {e}")
 
     st.subheader("Inference Preview")
     if df is None:
@@ -1171,40 +1482,81 @@ elif page == "🛠 Diagnostics":
 
 elif page == "📈 Model Performance":
     st.title("📈 Model Performance Metrics")
-    
-    st.markdown("### Production Model: Tuned Gradient Boosting Classifier")
+
+    if isinstance(model, ProductionLudoPredictor):
+        st.markdown(
+            f"### Loaded Production Model: {model.artifact.get('model_variant', 'unknown')} ({_infer_final_estimator_name(model)})"
+        )
+        st.caption(f"Decision threshold: {model.decision_threshold:.2f}")
+    else:
+        st.markdown("### Model Performance (static reference)")
     
     st.markdown("---")
     
     ### Performance Summary
     st.subheader("🎯 Performance Metrics")
-    
+
+    metrics = _extract_test_metrics(model) if isinstance(model, ProductionLudoPredictor) else None
+    acc = metrics.get("accuracy") if isinstance(metrics, dict) else None
+    prec1 = (
+        metrics.get("precision_class_1")
+        if isinstance(metrics, dict) and "precision_class_1" in metrics
+        else metrics.get("precision")
+        if isinstance(metrics, dict)
+        else None
+    )
+    rec1 = (
+        metrics.get("recall_class_1")
+        if isinstance(metrics, dict) and "recall_class_1" in metrics
+        else metrics.get("recall")
+        if isinstance(metrics, dict)
+        else None
+    )
+    f11 = (
+        metrics.get("f1_class_1")
+        if isinstance(metrics, dict) and "f1_class_1" in metrics
+        else metrics.get("f1")
+        if isinstance(metrics, dict)
+        else None
+    )
+    auc = metrics.get("roc_auc") if isinstance(metrics, dict) else None
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Accuracy", "0.828", "82.8%", delta_color="off")
-        st.metric("Precision (Class 1)", "0.660", "66.0%", delta_color="off")
-        st.metric("Recall (Class 1)", "0.738", "73.8%", delta_color="off")
-    
+        st.metric("Accuracy", f"{acc:.3f}" if isinstance(acc, (int, float)) else "N/A")
+        st.metric("Precision (Class 1)", f"{prec1:.3f}" if isinstance(prec1, (int, float)) else "N/A")
+        st.metric("Recall (Class 1)", f"{rec1:.3f}" if isinstance(rec1, (int, float)) else "N/A")
+
     with col2:
-        st.metric("F1-Score (Class 1)", "0.697", "69.7%", delta_color="off")
-        st.metric("ROC-AUC", "0.894", "89.4%", delta_color="off")
-        st.metric("Decision Threshold", "0.70", "Tuned", delta_color="off")
-    
+        st.metric("F1-Score (Class 1)", f"{f11:.3f}" if isinstance(f11, (int, float)) else "N/A")
+        st.metric("ROC-AUC", f"{auc:.3f}" if isinstance(auc, (int, float)) else "N/A")
+        thr = model.decision_threshold if isinstance(model, ProductionLudoPredictor) else None
+        st.metric("Decision Threshold", f"{thr:.2f}" if isinstance(thr, (int, float)) else "N/A")
+
     with col3:
-        st.markdown("""
-        ### Model Details
-        - **Algorithm**: Gradient Boosting Classifier
-        - **Training Samples**: ~80% of dataset
-        - **Test Samples**: ~20% of dataset
-        - **Features Used**: 21 engineered features
-        - **Class Balance**: Weighted by class frequency
-        """)
+        algo = _infer_final_estimator_name(model) if isinstance(model, ProductionLudoPredictor) else "Unknown"
+        feat_count = len(model.feature_columns) if isinstance(model, ProductionLudoPredictor) else 0
+        n_train = metrics.get("n_train") if isinstance(metrics, dict) else None
+        n_test = metrics.get("n_test") if isinstance(metrics, dict) else None
+
+        st.markdown(
+            "\n".join(
+                [
+                    "### Model Details",
+                    f"- **Algorithm**: {algo}",
+                    f"- **Training Samples**: {int(n_train)}" if isinstance(n_train, (int, float)) else "- **Training Samples**: N/A",
+                    f"- **Test Samples**: {int(n_test)}" if isinstance(n_test, (int, float)) else "- **Test Samples**: N/A",
+                    f"- **Features Used**: {feat_count} engineered/model inputs",
+                    "- **Primary Estimator**: Random Forest (when RF artifact exists)",
+                ]
+            )
+        )
     
     st.markdown("---")
     
     ### Confusion Matrix
     st.subheader("🔍 Confusion Matrix")
-    st.markdown("Shows model's classification accuracy breakdown:")
+    st.markdown("Illustrative confusion matrix (exact counts depend on the evaluation split).")
     
     # Simulated confusion matrix (from notebook context)
     cm_data = np.array([[800, 150], [120, 390]])  # Example values
@@ -1218,7 +1570,7 @@ elif page == "📈 Model Performance":
         colorscale='Blues'
     ))
     fig_cm.update_layout(
-        title="Confusion Matrix (Test Set)",
+        title="Confusion Matrix (Illustrative)",
         xaxis_title="Predicted Label",
         yaxis_title="Actual Label",
         height=400
@@ -1240,14 +1592,16 @@ elif page == "📈 Model Performance":
     
     # Generate sample ROC curve
     fpr = np.linspace(0, 1, 100)
-    # Sample AUC = 0.894 approximation
+    # Illustrative ROC curve shape (to avoid implying exact per-threshold curve without stored scores)
     tpr = 1 - (1 - fpr) ** 1.2
+
+    auc_label = f"{auc:.3f}" if isinstance(auc, (int, float)) else "N/A"
     
     fig_roc = go.Figure()
     fig_roc.add_trace(go.Scatter(
         x=fpr, y=tpr,
         mode='lines',
-        name='Model (AUC = 0.894)',
+        name=f'Model (AUC = {auc_label})',
         line=dict(color='blue', width=3)
     ))
     fig_roc.add_trace(go.Scatter(
@@ -1266,12 +1620,15 @@ elif page == "📈 Model Performance":
     st.plotly_chart(fig_roc, use_container_width=True)
     
     st.markdown("**ROC-AUC Interpretation:**")
-    st.markdown("""
-    - **AUC = 0.894**: Model performs well at distinguishing winners from non-winners
-    - **AUC closer to 1.0**: Better discrimination
-    - **AUC = 0.5**: Random guessing (baseline)
-    - **Our Model**: 79.4% better than random classifier
-    """)
+    st.markdown(
+        "\n".join(
+            [
+                f"- **AUC = {auc_label}**: Higher is better discrimination" if auc_label != "N/A" else "- **AUC**: Not available in artifact",
+                "- **AUC closer to 1.0**: Better discrimination",
+                "- **AUC = 0.5**: Random guessing (baseline)",
+            ]
+        )
+    )
     
     st.markdown("---")
     

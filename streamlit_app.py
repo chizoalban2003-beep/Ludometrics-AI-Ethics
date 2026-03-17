@@ -312,6 +312,20 @@ def _prepare_model_matrix(raw_rows: pd.DataFrame, predictor: ProductionLudoPredi
             X[col] = 0.0
     return X
 
+
+def _show_model_inputs(X_model: pd.DataFrame) -> None:
+    """Render the model input matrix in a compact, readable way."""
+    if X_model is None or X_model.empty:
+        st.info("No model inputs to display.")
+        return
+    with st.expander("Show engineered/model inputs (what the model sees)", expanded=False):
+        st.caption(f"Shape: {X_model.shape[0]} row(s) × {X_model.shape[1]} column(s)")
+        if len(X_model) == 1:
+            # Transpose for readability: one feature per row
+            st.dataframe(X_model.T.rename(columns={X_model.index[0]: "value"}), use_container_width=True)
+        else:
+            st.dataframe(X_model, use_container_width=True)
+
 @st.cache_resource
 def load_model():
     """Load the pre-trained production model (wrapped)."""
@@ -989,6 +1003,8 @@ elif page == "🎯 Model Prediction":
                     st.metric("Winner Probability", f"{probability[1]:.1%}")
                     st.metric("Non-Winner Probability", f"{probability[0]:.1%}")
                     st.caption(f"Decision threshold: {model.decision_threshold:.2f}")
+
+                _show_model_inputs(X_model)
         
         else:  # Sample Game
             st.subheader("Sample Game Scenarios")
@@ -1034,6 +1050,8 @@ elif page == "🎯 Model Prediction":
                             st.metric("Winner Probability", f"{probability[1]:.1%}")
                             st.metric("Non-Winner Probability", f"{probability[0]:.1%}")
                             st.caption(f"Decision threshold: {model.decision_threshold:.2f}")
+
+                        _show_model_inputs(X_model)
                     
                     except Exception as e:
                         st.error(f"Prediction failed: {str(e)}")
@@ -1078,6 +1096,74 @@ elif page == "🛠 Diagnostics":
                 st.write("Feature names (detected):", _get_feature_names_from_model(model)[:50])
         except Exception as e:
             st.warning(f"Could not introspect model: {e}")
+
+    st.subheader("Inference Preview")
+    if df is None:
+        st.info("Load the dataset to preview inference on real rows.")
+    elif not isinstance(model, ProductionLudoPredictor):
+        st.info("Inference preview is available only for the production predictor wrapper.")
+    else:
+        with st.expander("Preview a prediction on a dataset row", expanded=False):
+            base_numeric = [
+                "Turn",
+                "Dice_Roll",
+                "Token_Moved",
+                "Position_Before",
+                "Position_After",
+                "Tokens_Home",
+                "Tokens_Active",
+                "Tokens_Finished",
+                "Captured_Opponent",
+            ]
+
+            filter_mode = "Any"
+            if "Is_Winner" in df.columns:
+                filter_mode = st.selectbox(
+                    "Row filter",
+                    ["Any", "Winners (Is_Winner=1)", "Non-winners (Is_Winner=0)"],
+                    index=0,
+                )
+
+            df_preview = df
+            if filter_mode == "Winners (Is_Winner=1)":
+                df_preview = df[df["Is_Winner"] == 1]
+            elif filter_mode == "Non-winners (Is_Winner=0)":
+                df_preview = df[df["Is_Winner"] == 0]
+
+            if len(df_preview) == 0:
+                st.warning("No rows available for the selected filter.")
+            else:
+                row_idx = st.number_input(
+                    "Row index (within filtered set)",
+                    min_value=0,
+                    max_value=max(int(len(df_preview) - 1), 0),
+                    value=0,
+                    step=1,
+                )
+                raw_row = df_preview.iloc[[int(row_idx)]].copy()
+
+                show_cols = [c for c in (["Game_ID", "Player"] + base_numeric + ["Is_Winner"]) if c in raw_row.columns]
+                if show_cols:
+                    st.caption("Raw row values")
+                    st.dataframe(raw_row[show_cols], use_container_width=True)
+
+                try:
+                    raw_cols = ["Game_ID", "Player"] + base_numeric
+                    present = [c for c in raw_cols if c in raw_row.columns]
+                    X_model = _prepare_model_matrix(raw_row[present], model)
+                    pred = int(model.predict(X_model)[0])
+                    proba = model.predict_proba(X_model)[0]
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("Predicted label", "WINNER" if pred == 1 else "NON-WINNER")
+                    with col2:
+                        st.metric("P(Winner)", f"{proba[1]:.1%}")
+                        st.caption(f"Decision threshold: {model.decision_threshold:.2f}")
+
+                    _show_model_inputs(X_model)
+                except Exception as e:
+                    st.error(f"Inference preview failed: {e}")
 
 # ============================================================================
 # PAGE 5: MODEL PERFORMANCE

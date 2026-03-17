@@ -10,6 +10,7 @@ import joblib
 import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
+from typing import Optional
 
 # ============================================================================
 # PAGE CONFIG
@@ -48,6 +49,79 @@ def load_dataset():
             return pd.read_csv(path)
     return None
 
+
+def _safe_selectbox(
+    label: str,
+    options: list[str],
+    default: Optional[str] = None,
+    help: Optional[str] = None,
+):
+    if not options:
+        return None
+    if default is not None and default in options:
+        index = options.index(default)
+    else:
+        index = 0
+    return st.selectbox(label, options, index=index, help=help)
+
+
+def _noneable(options: list[str]) -> list[str]:
+    return ["(None)"] + options
+
+
+def _to_none(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    return None if value == "(None)" else value
+
+
+def _get_feature_names_from_model(model_obj) -> list[str]:
+    """Best-effort feature name extraction from a sklearn Pipeline."""
+    if model_obj is None:
+        return []
+
+    # Common: Pipeline(..., named_steps={'feat_selection': ...})
+    try:
+        feat_step = model_obj.named_steps.get('feat_selection')
+        if feat_step is not None and hasattr(feat_step, 'get_feature_names_out'):
+            names = feat_step.get_feature_names_out()
+            return [str(n) for n in names]
+    except Exception:
+        pass
+
+    # Fallbacks
+    try:
+        if hasattr(model_obj, 'feature_names_in_'):
+            return [str(n) for n in model_obj.feature_names_in_]
+    except Exception:
+        pass
+
+    return []
+
+
+def _is_numeric(series: pd.Series) -> bool:
+    return pd.api.types.is_numeric_dtype(series)
+
+
+def _is_categorical(series: pd.Series) -> bool:
+    return (
+        pd.api.types.is_bool_dtype(series)
+        or pd.api.types.is_categorical_dtype(series)
+        or pd.api.types.is_object_dtype(series)
+        or pd.api.types.is_string_dtype(series)
+    )
+
+
+def _plotly_facet_args(hue: Optional[str], facet_col: Optional[str], facet_row: Optional[str]) -> dict:
+    args: dict = {}
+    if hue:
+        args["color"] = hue
+    if facet_col:
+        args["facet_col"] = facet_col
+    if facet_row:
+        args["facet_row"] = facet_row
+    return args
+
 # Load resources
 model = load_model()
 df = load_dataset()
@@ -56,10 +130,29 @@ df = load_dataset()
 # SIDEBAR NAVIGATION
 # ============================================================================
 
-st.sidebar.title("🎲 Ludomaniac Navigation")
+st.sidebar.title("🎲 Ludomaniac")
+audience = st.sidebar.radio(
+    "Choose your audience level:",
+    ["Non-technical", "Semi-technical", "Technical"],
+    help="This changes the menu to match your comfort level.",
+)
+
+PAGES_BY_AUDIENCE: dict[str, list[str]] = {
+    "Non-technical": ["🏠 Overview", "🎯 Model Prediction", "📈 Model Performance"],
+    "Semi-technical": ["🏠 Overview", "📊 Dataset & EDA", "🎯 Model Prediction", "📈 Model Performance"],
+    "Technical": [
+        "🏠 Overview",
+        "📊 Dataset & EDA",
+        "🔧 Feature Engineering",
+        "🎯 Model Prediction",
+        "📈 Model Performance",
+        "🛠 Diagnostics",
+    ],
+}
+
 page = st.sidebar.radio(
-    "Select a Page:",
-    ["🏠 Overview", "📊 Dataset & EDA", "🔧 Feature Engineering", "🎯 Model Prediction", "📈 Model Performance"]
+    "Select a page:",
+    PAGES_BY_AUDIENCE[audience],
 )
 
 # ============================================================================
@@ -158,6 +251,10 @@ elif page == "📊 Dataset & EDA":
     st.title("📊 Dataset & Exploratory Data Analysis")
     
     if df is not None:
+        target_col = 'Is_Winner' if 'Is_Winner' in df.columns else None
+        numeric_cols_all = df.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols_all = [c for c in df.columns if c not in numeric_cols_all]
+
         st.subheader("Dataset Overview")
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -165,65 +262,186 @@ elif page == "📊 Dataset & EDA":
         with col2:
             st.metric("Total Columns", len(df.columns))
         with col3:
-            st.metric("Winner Count (Is_Winner=1)", (df['Is_Winner'] == 1).sum())
+            st.metric("Numeric Columns", len(numeric_cols_all))
         with col4:
-            st.metric("Non-Winner Count", (df['Is_Winner'] == 0).sum())
-        
+            st.metric("Categorical Columns", len(categorical_cols_all))
+
+        if target_col is not None:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Winner Count (Is_Winner=1)", int((df[target_col] == 1).sum()))
+            with col2:
+                st.metric("Non-Winner Count", int((df[target_col] == 0).sum()))
+
         st.markdown("---")
-        
-        ### Raw Data Sample
+
         st.subheader("Sample Data")
         st.dataframe(df.head(10), use_container_width=True)
-        
+
+        with st.expander("Column types"):
+            types_df = pd.DataFrame({"column": df.columns, "dtype": [str(dt) for dt in df.dtypes]})
+            st.dataframe(types_df, use_container_width=True, hide_index=True)
+
         st.markdown("---")
-        
-        ### Distribution Analysis
-        st.subheader("📉 Feature Distributions")
-        col1, col2 = st.columns(2)
-        
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        numeric_cols = [col for col in numeric_cols if col != 'Is_Winner']
-        
-        if numeric_cols:
-            with col1:
-                selected_col = st.selectbox("Select Feature to Visualize", numeric_cols)
-                fig_dist = px.histogram(
+
+        st.subheader("🎛️ Plot Controls")
+        control_cols = st.columns(4)
+
+        hue_options = []
+        if target_col is not None:
+            hue_options.append(target_col)
+        hue_options += categorical_cols_all
+
+        with control_cols[0]:
+            hue = _to_none(_safe_selectbox("Hue (color)", _noneable(hue_options), default=target_col))
+        with control_cols[1]:
+            facet_col = _to_none(_safe_selectbox("Facet col", _noneable(categorical_cols_all)))
+        with control_cols[2]:
+            facet_row = _to_none(_safe_selectbox("Facet row", _noneable(categorical_cols_all)))
+        with control_cols[3]:
+            max_points = st.number_input(
+                "Max points (scatter)",
+                min_value=500,
+                max_value=200_000,
+                value=15_000,
+                step=500,
+                help="Large datasets can make interactive scatter plots slow.",
+            )
+
+        facet_args = _plotly_facet_args(hue=hue, facet_col=facet_col, facet_row=facet_row)
+
+        st.markdown("---")
+
+        st.subheader("📈 Univariate Explorer")
+        uni_cols = [c for c in df.columns if c != target_col]
+        selected_uni = _safe_selectbox("Choose a variable", uni_cols)
+        if selected_uni is not None:
+            s = df[selected_uni]
+            if _is_numeric(s):
+                nbins = st.slider("Histogram bins", min_value=10, max_value=80, value=30, step=5)
+                fig_uni = px.histogram(
                     df,
-                    x=selected_col,
-                    nbins=30,
-                    color='Is_Winner',
-                    barmode='overlay',
-                    title=f"Distribution of {selected_col} by Winner Status"
+                    x=selected_uni,
+                    nbins=nbins,
+                    barmode='overlay' if hue else 'relative',
+                    title=f"Distribution of {selected_uni}",
+                    **facet_args,
                 )
-                st.plotly_chart(fig_dist, use_container_width=True)
-            
-            with col2:
-                st.markdown("""
-                ### Interpretation Guide
-                - **Blue bars**: Non-winners (Is_Winner = 0)
-                - **Orange bars**: Winners (Is_Winner = 1)
-                - **Key insight**: Positions and token counts show stronger separation for winners
-                """)
-        
+            else:
+                fig_uni = px.histogram(
+                    df,
+                    x=selected_uni,
+                    title=f"Counts for {selected_uni}",
+                    **facet_args,
+                )
+                fig_uni.update_layout(bargap=0.2)
+            st.plotly_chart(fig_uni, use_container_width=True)
+
         st.markdown("---")
-        
-        ### Correlation Analysis
-        st.subheader("🔗 Correlation with Winning Outcome")
-        numeric_df = df.select_dtypes(include=[np.number])
-        corr_with_winner = numeric_df.corr()['Is_Winner'].sort_values(ascending=False)
-        
-        fig_corr = px.bar(
-            x=corr_with_winner.values,
-            y=corr_with_winner.index,
-            orientation='h',
-            title="Spearman Correlation with Is_Winner",
-            labels={'x': 'Correlation Coefficient', 'y': 'Feature'}
-        )
-        st.plotly_chart(fig_corr, use_container_width=True)
-        
-        st.markdown("**Top Features by Correlation:**")
-        for i, (feature, corr) in enumerate(corr_with_winner.head(5).items(), 1):
-            st.write(f"{i}. **{feature}**: {corr:.4f}")
+
+        st.subheader("🔀 Bivariate Explorer")
+        col_x, col_y = st.columns(2)
+        with col_x:
+            x_col = _safe_selectbox("X axis", [c for c in df.columns if c != target_col])
+        with col_y:
+            y_col = _safe_selectbox("Y axis", [c for c in df.columns if c != target_col and c != x_col])
+
+        if x_col is not None and y_col is not None:
+            df_plot = df
+            if len(df_plot) > int(max_points) and (_is_numeric(df_plot[x_col]) and _is_numeric(df_plot[y_col])):
+                df_plot = df_plot.sample(int(max_points), random_state=42)
+
+            x_is_num = _is_numeric(df_plot[x_col])
+            y_is_num = _is_numeric(df_plot[y_col])
+            if x_is_num and y_is_num:
+                fig_bi = px.scatter(
+                    df_plot,
+                    x=x_col,
+                    y=y_col,
+                    title=f"{y_col} vs {x_col}",
+                    trendline="ols" if st.checkbox("Add OLS trendline", value=False) else None,
+                    **facet_args,
+                )
+            elif x_is_num and not y_is_num:
+                fig_bi = px.box(
+                    df_plot,
+                    x=y_col,
+                    y=x_col,
+                    points='outliers',
+                    title=f"{x_col} by {y_col}",
+                    **facet_args,
+                )
+            elif (not x_is_num) and y_is_num:
+                fig_bi = px.box(
+                    df_plot,
+                    x=x_col,
+                    y=y_col,
+                    points='outliers',
+                    title=f"{y_col} by {x_col}",
+                    **facet_args,
+                )
+            else:
+                fig_bi = px.density_heatmap(
+                    df_plot,
+                    x=x_col,
+                    y=y_col,
+                    title=f"Counts: {y_col} vs {x_col}",
+                )
+            st.plotly_chart(fig_bi, use_container_width=True)
+
+        st.markdown("---")
+
+        st.subheader("🧩 Relationships Across Variables")
+        numeric_cols = [c for c in numeric_cols_all if c != target_col]
+        if len(numeric_cols) >= 3:
+            with st.expander("Scatter matrix (numeric variables)", expanded=True):
+                max_dims = st.slider(
+                    "Max numeric dimensions",
+                    min_value=3,
+                    max_value=min(12, len(numeric_cols)),
+                    value=min(8, len(numeric_cols)),
+                )
+                dims = numeric_cols[:max_dims]
+                try:
+                    fig_matrix = px.scatter_matrix(
+                        df.sample(min(len(df), 3000), random_state=42),
+                        dimensions=dims,
+                        color=hue if hue in df.columns else None,
+                        title="Scatter matrix (sampled for performance)",
+                    )
+                    fig_matrix.update_traces(diagonal_visible=False)
+                    st.plotly_chart(fig_matrix, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Could not render scatter matrix: {e}")
+        elif len(numeric_cols) > 0:
+            st.info("Scatter matrix needs at least 3 numeric columns.")
+
+        if len(numeric_cols) >= 2:
+            with st.expander("Spearman correlation heatmap (numeric variables)", expanded=False):
+                corr = df[numeric_cols + ([target_col] if target_col else [])].corr(method='spearman')
+                fig_heat = px.imshow(
+                    corr,
+                    text_auto=True,
+                    aspect='auto',
+                    color_continuous_scale='RdBu_r',
+                    title="Spearman correlation heatmap",
+                    zmin=-1,
+                    zmax=1,
+                )
+                st.plotly_chart(fig_heat, use_container_width=True)
+
+        if target_col is not None and target_col in df.columns and numeric_cols:
+            st.markdown("---")
+            st.subheader("🔗 Correlation with Winning Outcome")
+            corr_with_winner = df[numeric_cols + [target_col]].corr(method='spearman')[target_col].sort_values(ascending=False)
+            fig_corr = px.bar(
+                x=corr_with_winner.values,
+                y=corr_with_winner.index,
+                orientation='h',
+                title="Spearman Correlation with Is_Winner",
+                labels={'x': 'Correlation Coefficient', 'y': 'Feature'}
+            )
+            st.plotly_chart(fig_corr, use_container_width=True)
     
     else:
         st.warning("Dataset not found. Ensure data file exists at `data file/Clean_Data/ludo_dataset_cleaned.csv`")
@@ -382,8 +600,11 @@ elif page == "🎯 Model Prediction":
         st.markdown("### Make a Prediction")
         st.markdown("Input current game features to predict the winner probability.")
         
-        # Get feature names from model
-        feature_names = model.named_steps['feat_selection'].get_feature_names_out()
+        # Get feature names from model (best-effort)
+        feature_names = _get_feature_names_from_model(model)
+        if not feature_names and df is not None:
+            # fallback to numeric columns excluding target
+            feature_names = [c for c in df.select_dtypes(include=[np.number]).columns if c != 'Is_Winner']
         
         st.markdown("---")
         
@@ -447,7 +668,10 @@ elif page == "🎯 Model Prediction":
                 
                 if st.button("🎲 Predict on Sample"):
                     # Align features
-                    X_sample = sample_data[feature_names] if all(f in sample_data.columns for f in feature_names) else sample_data
+                    if feature_names and all(f in sample_data.columns for f in feature_names):
+                        X_sample = sample_data[feature_names]
+                    else:
+                        X_sample = sample_data
                     
                     try:
                         prediction = model.predict(X_sample)[0]
@@ -471,6 +695,39 @@ elif page == "🎯 Model Prediction":
                         st.error(f"Prediction failed: {str(e)}")
             else:
                 st.warning("Dataset or features not available for samples.")
+
+# ============================================================================
+# PAGE 6: DIAGNOSTICS (TECHNICAL)
+# ============================================================================
+
+elif page == "🛠 Diagnostics":
+    st.title("🛠 Diagnostics")
+    st.markdown("Useful checks for debugging data/model loading and common runtime issues.")
+
+    st.subheader("Data")
+    if df is None:
+        st.error("Dataset could not be loaded.")
+    else:
+        st.success("Dataset loaded.")
+        st.write({
+            "rows": int(len(df)),
+            "columns": int(len(df.columns)),
+            "path_hint": "data file/Clean_Data/ludo_dataset_cleaned.csv (first match)",
+        })
+        st.write("Missing values (top 20 columns):")
+        na_counts = df.isna().sum().sort_values(ascending=False)
+        st.dataframe(na_counts.head(20).rename("na_count"), use_container_width=True)
+
+    st.subheader("Model")
+    if model is None:
+        st.error("Model could not be loaded.")
+    else:
+        st.success("Model loaded.")
+        try:
+            st.write("Type:", type(model))
+            st.write("Feature names (detected):", _get_feature_names_from_model(model)[:50])
+        except Exception as e:
+            st.warning(f"Could not introspect model: {e}")
 
 # ============================================================================
 # PAGE 5: MODEL PERFORMANCE

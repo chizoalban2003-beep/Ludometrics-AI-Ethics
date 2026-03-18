@@ -1944,6 +1944,152 @@ elif page == "🧭 Guided Play":
     work_progress: list[float] = []
     competitor_positions: list[float] = []
 
+    def _gp_apply_scenario_preset(preset: dict[str, Any]) -> None:
+        st.session_state["gp_turn"] = int(preset.get("turn", st.session_state.get("gp_turn", 1)))
+        st.session_state["gp_dice_roll"] = int(preset.get("dice_roll", st.session_state.get("gp_dice_roll", 1)))
+        st.session_state["gp_finish_pos"] = int(preset.get("finish_pos", st.session_state.get("gp_finish_pos", 57)))
+        my_vals = list(preset.get("my_positions", [0.0, 0.0, 0.0, 0.0]))
+        for i in range(4):
+            st.session_state[f"gp_mypos_{i+1}"] = float(my_vals[i]) if i < len(my_vals) else 0.0
+        st.session_state["gp_include_opponents"] = bool(preset.get("include_opponents", False))
+        opp_vals = list(preset.get("opponent_positions", [0.0, 0.0, 0.0, 0.0]))
+        for j in range(4):
+            st.session_state[f"gp_opppos_{j+1}"] = float(opp_vals[j]) if j < len(opp_vals) else 0.0
+
+    def _gp_apply_random_scenario_preset() -> None:
+        rng = np.random.default_rng()
+        finish = int(st.session_state.get("gp_finish_pos", 57))
+
+        chosen_positions: list[float] = []
+        chosen_roll = 1
+        chosen_turn = 1
+        for _ in range(60):
+            chosen_turn = int(rng.integers(1, 31))
+            chosen_roll = int(rng.integers(1, 7))
+
+            positions: list[float] = []
+            for _k in range(4):
+                bucket = float(rng.random())
+                if bucket < 0.35:
+                    positions.append(0.0)
+                elif bucket < 0.45:
+                    positions.append(float(finish))
+                else:
+                    if finish <= 2:
+                        positions.append(1.0)
+                    else:
+                        positions.append(float(rng.integers(1, min(57, finish))))
+
+            if _legal_moves_from_positions(positions, chosen_roll, finish):
+                chosen_positions = positions
+                break
+
+        if not chosen_positions:
+            chosen_positions = [0.0, 0.0, 1.0, 10.0]
+            chosen_roll = 1
+            chosen_turn = 1
+
+        st.session_state["gp_turn"] = int(chosen_turn)
+        st.session_state["gp_dice_roll"] = int(chosen_roll)
+        st.session_state["gp_finish_pos"] = int(finish)
+        for i in range(4):
+            st.session_state[f"gp_mypos_{i+1}"] = float(chosen_positions[i])
+
+        # Sometimes generate a capture demo by placing an opponent on a reachable landing square.
+        demo_capture = False
+        try:
+            moves = _legal_moves_from_positions(chosen_positions, int(chosen_roll), int(finish))
+            after_candidates = [
+                float(m.get("Position_After", 0.0))
+                for m in moves
+                if 1.0 <= float(m.get("Position_After", 0.0)) <= 56.0
+            ]
+            if after_candidates and float(rng.random()) < 0.60:
+                demo_capture = True
+                target_after = float(rng.choice(np.asarray(after_candidates)))
+            else:
+                target_after = 0.0
+        except Exception:
+            target_after = 0.0
+
+        st.session_state["gp_include_opponents"] = bool(demo_capture)
+        st.session_state["gp_opppos_1"] = float(target_after) if demo_capture else 0.0
+        for j in range(2, 5):
+            st.session_state[f"gp_opppos_{j}"] = 0.0
+
+    def _gp_apply_business_preset(preset: dict[str, Any]) -> None:
+        st.session_state["gp_turn"] = int(preset.get("turn", st.session_state.get("gp_turn", 1)))
+        st.session_state["gp_dice_roll"] = int(preset.get("dice_roll", st.session_state.get("gp_dice_roll", 1)))
+        st.session_state["gp_finish_pos"] = int(preset.get("finish_pos", st.session_state.get("gp_finish_pos", 57)))
+        work_vals = list(preset.get("work_progress", [0.0, 0.0, 0.0, 0.0]))
+        for i in range(4):
+            st.session_state[f"gp_wip_{i+1}"] = float(work_vals[i]) if i < len(work_vals) else 0.0
+        st.session_state["gp_include_competitor"] = bool(preset.get("include_competitor", False))
+        comp_vals = list(preset.get("competitor_positions", [0.0, 0.0, 0.0, 0.0]))
+        for j in range(4):
+            st.session_state[f"gp_comp_{j+1}"] = float(comp_vals[j]) if j < len(comp_vals) else 0.0
+
+    def _gp_apply_random_business_preset() -> None:
+        rng = np.random.default_rng()
+        finish = int(st.session_state.get("gp_finish_pos", 57))
+
+        chosen_progress: list[float] = []
+        chosen_capacity = 1
+        chosen_turn = 1
+        for _ in range(60):
+            chosen_turn = int(rng.integers(1, 31))
+            chosen_capacity = int(rng.integers(1, 7))
+
+            progress: list[float] = []
+            for _k in range(4):
+                bucket = float(rng.random())
+                if bucket < 0.30:
+                    progress.append(0.0)
+                elif bucket < 0.40:
+                    progress.append(float(finish))
+                else:
+                    if finish <= 2:
+                        progress.append(1.0)
+                    else:
+                        progress.append(float(rng.integers(1, min(57, finish))))
+
+            if _legal_moves_from_positions(progress, chosen_capacity, finish):
+                chosen_progress = progress
+                break
+
+        if not chosen_progress:
+            chosen_progress = [0.0, 0.0, 5.0, 20.0]
+            chosen_capacity = 2
+            chosen_turn = 1
+
+        st.session_state["gp_turn"] = int(chosen_turn)
+        st.session_state["gp_dice_roll"] = int(chosen_capacity)
+        st.session_state["gp_finish_pos"] = int(finish)
+        for i in range(4):
+            st.session_state[f"gp_wip_{i+1}"] = float(chosen_progress[i])
+
+        # Sometimes generate a disruption demo by placing a competitor marker on a reachable landing square.
+        demo_disruption = False
+        try:
+            moves = _legal_moves_from_positions(chosen_progress, int(chosen_capacity), int(finish))
+            after_candidates = [
+                float(m.get("Position_After", 0.0))
+                for m in moves
+                if 1.0 <= float(m.get("Position_After", 0.0)) <= 56.0
+            ]
+            if after_candidates and float(rng.random()) < 0.60:
+                demo_disruption = True
+                target_after = float(rng.choice(np.asarray(after_candidates)))
+            else:
+                target_after = 0.0
+        except Exception:
+            target_after = 0.0
+
+        st.session_state["gp_include_competitor"] = bool(demo_disruption)
+        st.session_state["gp_comp_1"] = float(target_after) if demo_disruption else 0.0
+        for j in range(2, 5):
+            st.session_state[f"gp_comp_{j}"] = 0.0
+
     if mode == "Scenario (from token positions)":
         st.subheader("Step 2 — Describe the scenario")
         st.markdown(
@@ -1987,81 +2133,20 @@ elif page == "🧭 Guided Play":
                 key="gp_scenario_preset",
             )
         with preset_mid:
-            if st.button("Load preset", use_container_width=True, key="gp_scenario_load"):
-                preset = scenario_presets.get(scenario_preset_name, {})
-                st.session_state["gp_turn"] = int(preset.get("turn", st.session_state.get("gp_turn", 1)))
-                st.session_state["gp_dice_roll"] = int(preset.get("dice_roll", st.session_state.get("gp_dice_roll", 1)))
-                st.session_state["gp_finish_pos"] = int(preset.get("finish_pos", st.session_state.get("gp_finish_pos", 57)))
-                my_vals = list(preset.get("my_positions", [0.0, 0.0, 0.0, 0.0]))
-                for i in range(4):
-                    st.session_state[f"gp_mypos_{i+1}"] = float(my_vals[i]) if i < len(my_vals) else 0.0
-                st.session_state["gp_include_opponents"] = bool(preset.get("include_opponents", False))
-                opp_vals = list(preset.get("opponent_positions", [0.0, 0.0, 0.0, 0.0]))
-                for j in range(4):
-                    st.session_state[f"gp_opppos_{j+1}"] = float(opp_vals[j]) if j < len(opp_vals) else 0.0
-                st.rerun()
+            st.button(
+                "Load preset",
+                use_container_width=True,
+                key="gp_scenario_load",
+                on_click=_gp_apply_scenario_preset,
+                args=(scenario_presets.get(scenario_preset_name, {}),),
+            )
         with preset_right:
-            if st.button("Random preset", use_container_width=True, key="gp_scenario_random"):
-                rng = np.random.default_rng()
-                finish = int(st.session_state.get("gp_finish_pos", 57))
-
-                chosen_positions: list[float] = []
-                chosen_roll = 1
-                chosen_turn = 1
-                for _ in range(60):
-                    chosen_turn = int(rng.integers(1, 31))
-                    chosen_roll = int(rng.integers(1, 7))
-
-                    positions: list[float] = []
-                    for _k in range(4):
-                        bucket = float(rng.random())
-                        if bucket < 0.35:
-                            positions.append(0.0)
-                        elif bucket < 0.45:
-                            positions.append(float(finish))
-                        else:
-                            if finish <= 2:
-                                positions.append(1.0)
-                            else:
-                                positions.append(float(rng.integers(1, min(57, finish))))
-
-                    if _legal_moves_from_positions(positions, chosen_roll, finish):
-                        chosen_positions = positions
-                        break
-
-                if not chosen_positions:
-                    chosen_positions = [0.0, 0.0, 1.0, 10.0]
-                    chosen_roll = 1
-                    chosen_turn = 1
-
-                st.session_state["gp_turn"] = int(chosen_turn)
-                st.session_state["gp_dice_roll"] = int(chosen_roll)
-                st.session_state["gp_finish_pos"] = int(finish)
-                for i in range(4):
-                    st.session_state[f"gp_mypos_{i+1}"] = float(chosen_positions[i])
-
-                # Sometimes generate a capture demo by placing an opponent on a reachable landing square.
-                demo_capture = False
-                try:
-                    moves = _legal_moves_from_positions(chosen_positions, int(chosen_roll), int(finish))
-                    after_candidates = [
-                        float(m.get("Position_After", 0.0))
-                        for m in moves
-                        if 1.0 <= float(m.get("Position_After", 0.0)) <= 56.0
-                    ]
-                    if after_candidates and float(rng.random()) < 0.60:
-                        demo_capture = True
-                        target_after = float(rng.choice(np.asarray(after_candidates)))
-                    else:
-                        target_after = 0.0
-                except Exception:
-                    target_after = 0.0
-
-                st.session_state["gp_include_opponents"] = bool(demo_capture)
-                st.session_state["gp_opppos_1"] = float(target_after) if demo_capture else 0.0
-                for j in range(2, 5):
-                    st.session_state[f"gp_opppos_{j}"] = 0.0
-                st.rerun()
+            st.button(
+                "Random preset",
+                use_container_width=True,
+                key="gp_scenario_random",
+                on_click=_gp_apply_random_scenario_preset,
+            )
 
         pos_cols = st.columns(4)
         my_positions: list[float] = []
@@ -2184,81 +2269,20 @@ elif page == "🧭 Guided Play":
                 help="Fills in capacity + work progress (and optional competitor markers) with a ready-to-demo scenario.",
             )
         with preset_mid:
-            if st.button("Load preset", use_container_width=True):
-                preset = presets.get(preset_name, {})
-                st.session_state["gp_turn"] = int(preset.get("turn", st.session_state.get("gp_turn", 1)))
-                st.session_state["gp_dice_roll"] = int(preset.get("dice_roll", st.session_state.get("gp_dice_roll", 1)))
-                st.session_state["gp_finish_pos"] = int(preset.get("finish_pos", st.session_state.get("gp_finish_pos", 57)))
-                work_vals = list(preset.get("work_progress", [0.0, 0.0, 0.0, 0.0]))
-                for i in range(4):
-                    st.session_state[f"gp_wip_{i+1}"] = float(work_vals[i]) if i < len(work_vals) else 0.0
-                st.session_state["gp_include_competitor"] = bool(preset.get("include_competitor", False))
-                comp_vals = list(preset.get("competitor_positions", [0.0, 0.0, 0.0, 0.0]))
-                for j in range(4):
-                    st.session_state[f"gp_comp_{j+1}"] = float(comp_vals[j]) if j < len(comp_vals) else 0.0
-                st.rerun()
+            st.button(
+                "Load preset",
+                use_container_width=True,
+                key="gp_business_load",
+                on_click=_gp_apply_business_preset,
+                args=(presets.get(preset_name, {}),),
+            )
         with preset_right:
-            if st.button("Random preset", use_container_width=True, key="gp_business_random"):
-                rng = np.random.default_rng()
-                finish = int(st.session_state.get("gp_finish_pos", 57))
-
-                chosen_progress: list[float] = []
-                chosen_capacity = 1
-                chosen_turn = 1
-                for _ in range(60):
-                    chosen_turn = int(rng.integers(1, 31))
-                    chosen_capacity = int(rng.integers(1, 7))
-
-                    progress: list[float] = []
-                    for _k in range(4):
-                        bucket = float(rng.random())
-                        if bucket < 0.30:
-                            progress.append(0.0)
-                        elif bucket < 0.40:
-                            progress.append(float(finish))
-                        else:
-                            if finish <= 2:
-                                progress.append(1.0)
-                            else:
-                                progress.append(float(rng.integers(1, min(57, finish))))
-
-                    if _legal_moves_from_positions(progress, chosen_capacity, finish):
-                        chosen_progress = progress
-                        break
-
-                if not chosen_progress:
-                    chosen_progress = [0.0, 0.0, 5.0, 20.0]
-                    chosen_capacity = 2
-                    chosen_turn = 1
-
-                st.session_state["gp_turn"] = int(chosen_turn)
-                st.session_state["gp_dice_roll"] = int(chosen_capacity)
-                st.session_state["gp_finish_pos"] = int(finish)
-                for i in range(4):
-                    st.session_state[f"gp_wip_{i+1}"] = float(chosen_progress[i])
-
-                # Sometimes generate a disruption demo by placing a competitor marker on a reachable landing square.
-                demo_disruption = False
-                try:
-                    moves = _legal_moves_from_positions(chosen_progress, int(chosen_capacity), int(finish))
-                    after_candidates = [
-                        float(m.get("Position_After", 0.0))
-                        for m in moves
-                        if 1.0 <= float(m.get("Position_After", 0.0)) <= 56.0
-                    ]
-                    if after_candidates and float(rng.random()) < 0.60:
-                        demo_disruption = True
-                        target_after = float(rng.choice(np.asarray(after_candidates)))
-                    else:
-                        target_after = 0.0
-                except Exception:
-                    target_after = 0.0
-
-                st.session_state["gp_include_competitor"] = bool(demo_disruption)
-                st.session_state["gp_comp_1"] = float(target_after) if demo_disruption else 0.0
-                for j in range(2, 5):
-                    st.session_state[f"gp_comp_{j}"] = 0.0
-                st.rerun()
+            st.button(
+                "Random preset",
+                use_container_width=True,
+                key="gp_business_random",
+                on_click=_gp_apply_random_business_preset,
+            )
 
         st.markdown("Enter the progress of 4 work items (0 = not started, 57 = completed):")
         wi_cols = st.columns(4)

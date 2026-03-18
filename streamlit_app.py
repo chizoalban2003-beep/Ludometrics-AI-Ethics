@@ -630,6 +630,33 @@ def _render_guided_play_60s_demo(audience_level: str) -> None:
         )
 
 
+def _render_ethics_and_limitations(audience_level: str) -> None:
+    audience_norm = str(audience_level or "").strip().lower()
+    expanded = audience_norm.startswith("non")
+
+    with st.expander("Ethics & limitations (responsible use)", expanded=expanded):
+        if audience_norm.startswith("non"):
+            st.markdown(
+                "- This app gives **recommendations**, not guarantees.\n"
+                "- The score is learned from **simulated / historical-style data** and may not match every real game.\n"
+                "- If two options are very close, either is reasonable — choose the one you can explain clearly.\n"
+                "- In **business analogy mode**, treat outputs as a teaching/demo tool, not a real KPI or contract decision."
+            )
+            return
+
+        st.markdown(
+            "**What the model is (and is not):**\n"
+            "- A supervised ML model that estimates $\\hat{P}(\\\"win\\\" \\mid \\text{state}, a)$ from the project dataset.\n"
+            "- Not a proof of optimal play, not causal inference, and not a guarantee of outcomes.\n\n"
+            "**Key ethics/roboethics considerations:**\n"
+            "- **Automation bias:** users may over-trust the top-ranked option, especially when probabilities are close.\n"
+            "- **Scope/validity:** Scenario generation uses simplified rules; real Ludo variants differ (safe squares, etc.).\n"
+            "- **Representativeness:** synthetic/simulated data can embed strategy bias; generalization is limited.\n"
+            "- **Accountability:** this is decision-support; humans remain responsible for real-world decisions.\n"
+            "- **Privacy:** avoid entering sensitive business data unless you control deployment/logging and data handling." 
+        )
+
+
 def _choose_active_model_ui(
     base_model: "ProductionLudoPredictor",
     df_ref: pd.DataFrame,
@@ -1254,6 +1281,8 @@ if page == "🏠 Overview":
         "recommend the option with the highest predicted win probability."
     )
 
+    _render_ethics_and_limitations(audience)
+
 # ============================================================================
 # PAGE 2: DATASET & EDA
 # ============================================================================
@@ -1855,6 +1884,7 @@ elif page == "🧭 Guided Play":
     _render_guided_play_instructions()
     _render_guided_play_or_game_theory_optimization(audience)
     _render_guided_play_60s_demo(audience)
+    _render_ethics_and_limitations(audience)
     st.markdown("---")
 
     active_model = _choose_active_model_ui(model, df)

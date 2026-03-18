@@ -2242,23 +2242,53 @@ elif page == "📈 Model Performance":
 st.markdown("---")
 
 REPO_URL = "https://github.com/chizoalban2003/ludomaniac"
-REPO_BRANCH = "main"
 
 
-def _repo_blob_url(path: str) -> str:
-    path = str(path).lstrip("/")
-    return f"{REPO_URL}/blob/{REPO_BRANCH}/{path}"
+def _download_button_for_file(label: str, file_path: str, mime: str, file_name: str | None = None) -> None:
+    path = Path(file_path)
+    if not path.exists():
+        st.caption(f"{label}: not available in this deployment")
+        return
+    data = path.read_bytes()
+    st.download_button(
+        label=label,
+        data=data,
+        file_name=file_name or path.name,
+        mime=mime,
+        use_container_width=True,
+    )
 
 
 st.markdown("### 📚 Project Links")
+st.caption(
+    "If the GitHub repository is private, the buttons below let users download the same files directly from the app."
+)
+
 col_a, col_b, col_c = st.columns(3)
 with col_a:
-    st.link_button("GitHub Repository", REPO_URL)
-    st.link_button("README", _repo_blob_url("README.md"))
+    st.link_button("GitHub Repository (may require access)", REPO_URL)
+    _download_button_for_file("Download README", "README.md", "text/markdown", "README.md")
+
 with col_b:
-    st.link_button("Feature Engineering Notebook", _repo_blob_url("jupyter_notebooks/Feature_engineering.ipynb"))
-    st.link_button("EDA Notebook", _repo_blob_url("jupyter_notebooks/Ludo_EDA.ipynb"))
+    _download_button_for_file(
+        "Download Feature Engineering Notebook",
+        "jupyter_notebooks/Feature_engineering.ipynb",
+        "application/x-ipynb+json",
+        "Feature_engineering.ipynb",
+    )
+    _download_button_for_file(
+        "Download EDA Notebook",
+        "jupyter_notebooks/Ludo_EDA.ipynb",
+        "application/x-ipynb+json",
+        "Ludo_EDA.ipynb",
+    )
+
 with col_c:
-    st.link_button("Dataset Creation Notebook", _repo_blob_url("jupyter_notebooks/create_dataset.ipynb"))
+    _download_button_for_file(
+        "Download Dataset Creation Notebook",
+        "jupyter_notebooks/create_dataset.ipynb",
+        "application/x-ipynb+json",
+        "create_dataset.ipynb",
+    )
 
 st.caption("Built with Streamlit • Python • scikit-learn")

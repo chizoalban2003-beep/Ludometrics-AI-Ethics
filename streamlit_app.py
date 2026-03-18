@@ -595,10 +595,17 @@ def _export_predictor_artifact(predictor: ProductionLudoPredictor, export_path: 
     # Ensure required fields exist.
     artifact["decision_threshold"] = float(predictor.decision_threshold)
     artifact["feature_columns"] = list(predictor.feature_columns)
-    artifact["model"] = {
-        "base_pipeline": predictor.base_pipeline,
-        "platt_calibrator": predictor.platt_calibrator,
-    }
+    # Persist in the same shape the loader can understand:
+    # - Calibrated models: dict with base_pipeline + platt_calibrator
+    # - Uncalibrated models (e.g. advanced RF): store estimator directly under "model"
+    if predictor.platt_calibrator is None:
+        artifact["model"] = predictor.base_pipeline
+        artifact.setdefault("threshold", float(predictor.decision_threshold))
+    else:
+        artifact["model"] = {
+            "base_pipeline": predictor.base_pipeline,
+            "platt_calibrator": predictor.platt_calibrator,
+        }
     artifact.setdefault("created_at_utc", pd.Timestamp.utcnow().isoformat())
     artifact["exported_at_utc"] = pd.Timestamp.utcnow().isoformat()
     joblib.dump(artifact, export_path)
@@ -1611,9 +1618,10 @@ elif page == "🛠 Diagnostics":
     st.subheader("Model Artifacts")
     gb_export_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
     rf_export_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
+    legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
     st.write(
         {
-            "production_ludo_predictor.pkl exists": Path("jupyter_notebooks/model/production_ludo_predictor.pkl").exists(),
+            "legacy production_ludo_predictor.pkl exists": legacy_path.exists(),
             "production_gb_predictor.pkl exists": gb_export_path.exists(),
             "production_rf_predictor.pkl exists": rf_export_path.exists(),
         }
@@ -1623,14 +1631,20 @@ elif page == "🛠 Diagnostics":
         with st.expander("Export / Save models", expanded=False):
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Export current production model as production_gb_predictor.pkl"):
+                suggested_path = rf_export_path if model.platt_calibrator is None else gb_export_path
+                label = "Export current model"
+                if model.platt_calibrator is None:
+                    label += " as production_rf_predictor.pkl"
+                else:
+                    label += " as production_gb_predictor.pkl"
+                if st.button(label):
                     try:
-                        _export_predictor_artifact(model, gb_export_path)
-                        st.success(f"Saved: {gb_export_path}")
+                        _export_predictor_artifact(model, suggested_path)
+                        st.success(f"Saved: {suggested_path}")
                     except Exception as e:
                         st.error(f"Export failed: {e}")
             with col2:
-                if st.button("Train + export RF as production_rf_predictor.pkl"):
+                if st.button("Train + export experimental RF as production_rf_predictor.pkl"):
                     try:
                         with st.spinner("Training RF (cached) and exporting…"):
                             rf_pred = _train_experimental_random_forest_predictor(df, tuple(model.feature_columns))

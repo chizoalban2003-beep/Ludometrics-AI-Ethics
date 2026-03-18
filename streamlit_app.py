@@ -490,6 +490,62 @@ def _bounce_position_after(position_before: float, dice_roll: int, finish_pos: i
     return float(target)
 
 
+def _token_state_counts_from_positions(positions: list[float], finish_pos: int = 57) -> tuple[int, int, int]:
+    tokens_home = 0
+    tokens_active = 0
+    tokens_finished = 0
+    for p in positions:
+        try:
+            pos = float(p)
+        except Exception:
+            pos = 0.0
+        if pos <= 0:
+            tokens_home += 1
+        elif pos >= float(finish_pos):
+            tokens_finished += 1
+        else:
+            tokens_active += 1
+    return tokens_home, tokens_active, tokens_finished
+
+
+def _legal_moves_from_positions(
+    positions: list[float],
+    dice_roll: int,
+    finish_pos: int = 57,
+) -> list[dict[str, Any]]:
+    """Generate legal move options using the dataset generator's simplified rules.
+
+    Rules mirrored from `generate_ludo_dataset.py`:
+    - Home (0) can only enter on a 6 (to position 1).
+    - Finished tokens (finish_pos) cannot move.
+    - Overshooting finish bounces back.
+    """
+    options: list[dict[str, Any]] = []
+    roll = int(dice_roll)
+    for idx, p in enumerate(positions):
+        pos = float(p)
+        if pos >= float(finish_pos):
+            continue
+        if pos <= 0:
+            if roll == 6:
+                options.append(
+                    {
+                        "Token_Moved": idx + 1,
+                        "Position_Before": 0.0,
+                        "Position_After": 1.0,
+                    }
+                )
+            continue
+        options.append(
+            {
+                "Token_Moved": idx + 1,
+                "Position_Before": float(pos),
+                "Position_After": float(_bounce_position_after(float(pos), roll, int(finish_pos))),
+            }
+        )
+    return options
+
+
 def _render_guided_play_instructions() -> None:
     st.markdown("### How to use AI-guided play")
     st.markdown(
@@ -1781,6 +1837,13 @@ elif page == "🧭 Guided Play":
 
     active_model = _choose_active_model_ui(model, df)
 
+    st.subheader("Choose how to provide moves")
+    mode = st.radio(
+        "Guided Play mode",
+        ["Scenario (from token positions)", "Manual options"],
+        help="Scenario mode auto-generates legal moves from token positions. Manual options lets you type options A/B/C/D yourself.",
+    )
+
     st.subheader("Step 1 — Enter shared turn information")
     player_options = (
         sorted(df["Player"].dropna().astype(str).unique().tolist()) if "Player" in df.columns else ["Red"]
@@ -1798,84 +1861,177 @@ elif page == "🧭 Guided Play":
         turn = st.number_input("Turn", min_value=0, value=1, step=1)
         dice_roll = st.number_input("Dice_Roll", min_value=0, max_value=6, value=1, step=1)
     with common_right:
-        tokens_home = st.number_input("Tokens_Home", min_value=0, max_value=4, value=3, step=1)
-        tokens_active = st.number_input("Tokens_Active", min_value=0, max_value=4, value=1, step=1)
-        tokens_finished = st.number_input("Tokens_Finished", min_value=0, max_value=4, value=0, step=1)
+        finish_pos = st.number_input(
+            "Finish position",
+            min_value=10,
+            max_value=100,
+            value=57,
+            step=1,
+            help="Matches the dataset generator's finish position by default.",
+        )
 
-    if int(tokens_home) + int(tokens_active) + int(tokens_finished) != 4:
-        st.warning("Token counts typically sum to 4 for a player. Continue if using a different encoding.")
+        if mode == "Manual options":
+            tokens_home = st.number_input("Tokens_Home", min_value=0, max_value=4, value=3, step=1)
+            tokens_active = st.number_input("Tokens_Active", min_value=0, max_value=4, value=1, step=1)
+            tokens_finished = st.number_input("Tokens_Finished", min_value=0, max_value=4, value=0, step=1)
 
-    st.subheader("Step 2 — Enter your move options")
-    num_options = st.slider("How many move options to compare?", min_value=2, max_value=4, value=2, step=1)
-    finish_pos = st.number_input(
-        "Finish position used for auto-calculation",
-        min_value=10,
-        max_value=100,
-        value=57,
-        step=1,
-        help="Used only if you enable auto-calc for Position_After (bounce-back rule).",
-    )
+            if int(tokens_home) + int(tokens_active) + int(tokens_finished) != 4:
+                st.warning("Token counts typically sum to 4 for a player. Continue if using a different encoding.")
+        else:
+            st.caption("In Scenario mode, token counts are computed automatically from the 4 token positions.")
+            tokens_home = 0
+            tokens_active = 0
+            tokens_finished = 0
 
     options_payload: list[dict[str, Any]] = []
-    option_letters = [chr(ord("A") + i) for i in range(int(num_options))]
-    for i, letter in enumerate(option_letters):
-        with st.expander(f"Option {letter}", expanded=(i == 0)):
-            col1, col2, col3 = st.columns([1, 1, 1])
-            with col1:
-                token_moved = st.number_input(
-                    f"Token_Moved (Option {letter})",
-                    min_value=0,
-                    max_value=4,
-                    value=1,
-                    step=1,
-                    key=f"gp_tok_{letter}",
-                )
-                captured = st.number_input(
-                    f"Captured_Opponent (0/1) (Option {letter})",
-                    min_value=0,
-                    max_value=1,
-                    value=0,
-                    step=1,
-                    key=f"gp_cap_{letter}",
-                )
-            with col2:
-                pos_before = st.number_input(
-                    f"Position_Before (Option {letter})",
-                    min_value=0.0,
-                    value=0.0,
-                    step=1.0,
-                    key=f"gp_posb_{letter}",
-                )
-                auto_after = st.checkbox(
-                    f"Auto-calc Position_After from Dice_Roll (Option {letter})",
-                    value=True,
-                    key=f"gp_auto_{letter}",
-                )
-            with col3:
-                computed_after = _bounce_position_after(pos_before, int(dice_roll), int(finish_pos))
-                pos_after = st.number_input(
-                    f"Position_After (Option {letter})",
-                    min_value=0.0,
-                    value=float(computed_after),
-                    step=1.0,
-                    key=f"gp_posa_{letter}",
-                    disabled=bool(auto_after),
-                )
-                if auto_after:
-                    pos_after = float(computed_after)
 
-            options_payload.append(
-                {
-                    "option": letter,
-                    "Token_Moved": int(token_moved),
-                    "Position_Before": float(pos_before),
-                    "Position_After": float(pos_after),
-                    "Captured_Opponent": int(captured),
-                }
-            )
+    if mode == "Scenario (from token positions)":
+        st.subheader("Step 2 — Describe the scenario")
+        st.markdown(
+            "Enter the **current positions of your 4 tokens**. Use `0` for home. "
+            "(This app follows the simplified simulation rules used to generate the dataset.)"
+        )
+
+        pos_cols = st.columns(4)
+        my_positions: list[float] = []
+        for i in range(4):
+            with pos_cols[i]:
+                my_positions.append(
+                    float(
+                        st.number_input(
+                            f"Your token {i+1} position",
+                            min_value=0.0,
+                            value=0.0,
+                            step=1.0,
+                            key=f"gp_mypos_{i+1}",
+                        )
+                    )
+                )
+
+        include_opponents = st.checkbox(
+            "Include opponent token positions (for capture detection)",
+            value=False,
+            help="If enabled, the app can set Captured_Opponent=1 when your move lands on an opponent token.",
+        )
+
+        opponent_positions: list[float] = []
+        if include_opponents:
+            st.markdown("**Opponent token positions (optional):**")
+            opp_cols = st.columns(4)
+            for j in range(4):
+                with opp_cols[j]:
+                    opponent_positions.append(
+                        float(
+                            st.number_input(
+                                f"Opponent token {j+1} pos",
+                                min_value=0.0,
+                                value=0.0,
+                                step=1.0,
+                                key=f"gp_opppos_{j+1}",
+                            )
+                        )
+                    )
+
+        tokens_home, tokens_active, tokens_finished = _token_state_counts_from_positions(my_positions, int(finish_pos))
+        st.write(
+            {
+                "Tokens_Home": int(tokens_home),
+                "Tokens_Active": int(tokens_active),
+                "Tokens_Finished": int(tokens_finished),
+            }
+        )
+
+        st.subheader("Step 3 — Generated legal moves")
+        generated = _legal_moves_from_positions(my_positions, int(dice_roll), int(finish_pos))
+        if not generated:
+            st.warning("No legal moves detected for this dice roll under the simplified rules.")
+        else:
+            option_letters = [chr(ord("A") + i) for i in range(len(generated))]
+            for letter, move in zip(option_letters, generated):
+                after = float(move["Position_After"])
+                captured_flag = 0
+                if include_opponents and opponent_positions:
+                    # In the synthetic generator, captures are only checked on the main track (1..56).
+                    if 1.0 <= after <= 56.0 and any(float(p) == after for p in opponent_positions):
+                        captured_flag = 1
+
+                options_payload.append(
+                    {
+                        "option": letter,
+                        "Token_Moved": int(move["Token_Moved"]),
+                        "Position_Before": float(move["Position_Before"]),
+                        "Position_After": float(move["Position_After"]),
+                        "Captured_Opponent": int(captured_flag),
+                    }
+                )
+
+            st.dataframe(pd.DataFrame(options_payload), use_container_width=True, hide_index=True)
+
+    else:
+        st.subheader("Step 2 — Enter your move options")
+        num_options = st.slider("How many move options to compare?", min_value=2, max_value=4, value=2, step=1)
+        option_letters = [chr(ord("A") + i) for i in range(int(num_options))]
+        for i, letter in enumerate(option_letters):
+            with st.expander(f"Option {letter}", expanded=(i == 0)):
+                col1, col2, col3 = st.columns([1, 1, 1])
+                with col1:
+                    token_moved = st.number_input(
+                        f"Token_Moved (Option {letter})",
+                        min_value=0,
+                        max_value=4,
+                        value=1,
+                        step=1,
+                        key=f"gp_tok_{letter}",
+                    )
+                    captured = st.number_input(
+                        f"Captured_Opponent (0/1) (Option {letter})",
+                        min_value=0,
+                        max_value=1,
+                        value=0,
+                        step=1,
+                        key=f"gp_cap_{letter}",
+                    )
+                with col2:
+                    pos_before = st.number_input(
+                        f"Position_Before (Option {letter})",
+                        min_value=0.0,
+                        value=0.0,
+                        step=1.0,
+                        key=f"gp_posb_{letter}",
+                    )
+                    auto_after = st.checkbox(
+                        f"Auto-calc Position_After from Dice_Roll (Option {letter})",
+                        value=True,
+                        key=f"gp_auto_{letter}",
+                    )
+                with col3:
+                    computed_after = _bounce_position_after(pos_before, int(dice_roll), int(finish_pos))
+                    pos_after = st.number_input(
+                        f"Position_After (Option {letter})",
+                        min_value=0.0,
+                        value=float(computed_after),
+                        step=1.0,
+                        key=f"gp_posa_{letter}",
+                        disabled=bool(auto_after),
+                    )
+                    if auto_after:
+                        pos_after = float(computed_after)
+
+                options_payload.append(
+                    {
+                        "option": letter,
+                        "Token_Moved": int(token_moved),
+                        "Position_Before": float(pos_before),
+                        "Position_After": float(pos_after),
+                        "Captured_Opponent": int(captured),
+                    }
+                )
 
     if st.button("🧮 Compare moves"):
         try:
+            if not options_payload:
+                st.warning("No move options to compare.")
+                st.stop()
             raw_rows = []
             for opt in options_payload:
                 raw_rows.append(

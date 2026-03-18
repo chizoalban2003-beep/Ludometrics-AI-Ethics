@@ -658,6 +658,124 @@ def _plotly_facet_args(hue: Optional[str], facet_col: Optional[str], facet_row: 
         args["facet_row"] = facet_row
     return args
 
+
+def _get_dataset_source_path() -> Optional[Path]:
+    """Return the dataset path used by `load_dataset()` when present."""
+    candidates = [
+        Path("data file/Clean_Data/ludo_dataset_cleaned.csv"),
+        Path("data file/Raw_Data/ludo_dataset_cleaned.csv"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _reduce_to_final_state_per_game_player(df_in: pd.DataFrame) -> pd.DataFrame:
+    """Reduce a turn-level dataset to one row per (Game_ID, Player).
+
+    Strategy: take the last observed turn per Game_ID+Player (max Turn if present,
+    otherwise keep the last row order within each group).
+
+    This keeps features aligned with the model's expected raw schema and avoids
+    inventing new aggregate features.
+    """
+    if df_in is None or df_in.empty:
+        return df_in
+    if "Game_ID" not in df_in.columns or "Player" not in df_in.columns:
+        return df_in
+
+    df_tmp = df_in.copy()
+    if "Turn" in df_tmp.columns:
+        df_tmp["_turn_num"] = pd.to_numeric(df_tmp["Turn"], errors="coerce")
+        df_tmp = df_tmp.sort_values(["Game_ID", "Player", "_turn_num"], kind="mergesort")
+    else:
+        df_tmp = df_tmp.sort_values(["Game_ID", "Player"], kind="mergesort")
+
+    reduced = df_tmp.groupby(["Game_ID", "Player"], as_index=False).tail(1)
+    if "_turn_num" in reduced.columns:
+        reduced = reduced.drop(columns=["_turn_num"])
+    return reduced
+
+
+@st.cache_data
+def _evaluate_production_model(
+    model_path_str: str,
+    dataset_signature: tuple[str, int, int],
+    eval_unit: str,
+    sample_n: int,
+    random_state: int,
+) -> dict[str, Any]:
+    """Compute a live evaluation report on the current dataset.
+
+    Notes:
+    - This evaluates the selected artifact on the *current* dataset file.
+    - It may not match the original notebook test split unless that split is reloaded.
+    """
+    from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+
+    model_path = Path(model_path_str)
+    predictor = load_production_model_from_path(model_path)
+    if not isinstance(predictor, ProductionLudoPredictor):
+        raise ValueError(f"Could not load ProductionLudoPredictor from {model_path_str}")
+
+    ds_path = _get_dataset_source_path()
+    if ds_path is None:
+        raise FileNotFoundError("Dataset not found for evaluation")
+    df_eval = pd.read_csv(ds_path)
+    if "Is_Winner" not in df_eval.columns:
+        raise ValueError("Dataset missing Is_Winner")
+
+    eval_unit_norm = str(eval_unit).strip().lower()
+    if eval_unit_norm.startswith("final"):
+        df_eval = _reduce_to_final_state_per_game_player(df_eval)
+
+    y_raw = pd.to_numeric(df_eval["Is_Winner"], errors="coerce")
+    mask = y_raw.notna()
+    df_eval = df_eval.loc[mask].copy()
+    y = y_raw.loc[mask].astype(int).to_numpy()
+
+    if sample_n > 0 and len(df_eval) > sample_n:
+        df_eval = df_eval.sample(sample_n, random_state=int(random_state))
+        y = df_eval["Is_Winner"].astype(int).to_numpy()
+
+    base_numeric = [
+        "Turn",
+        "Dice_Roll",
+        "Token_Moved",
+        "Position_Before",
+        "Position_After",
+        "Tokens_Home",
+        "Tokens_Active",
+        "Tokens_Finished",
+        "Captured_Opponent",
+    ]
+    raw_cols = [c for c in (["Game_ID", "Player"] + base_numeric) if c in df_eval.columns]
+    X_raw = df_eval[raw_cols].copy()
+    X_model = _prepare_model_matrix(X_raw, predictor)
+
+    y_pred = predictor.predict(X_model).astype(int)
+    proba = predictor.predict_proba(X_model)
+    y_score = np.asarray(proba)[:, 1] if np.asarray(proba).ndim == 2 else None
+
+    cm = confusion_matrix(y, y_pred, labels=[0, 1])
+    report = classification_report(y, y_pred, labels=[0, 1], output_dict=True, zero_division=0)
+    try:
+        auc = float(roc_auc_score(y, y_score)) if y_score is not None and len(np.unique(y)) > 1 else float("nan")
+    except Exception:
+        auc = float("nan")
+
+    return {
+        "n": int(len(df_eval)),
+        "eval_unit": "final_state" if eval_unit_norm.startswith("final") else "turn_level",
+        "threshold": float(predictor.decision_threshold),
+        "model_variant": str(predictor.artifact.get("model_variant", "unknown")),
+        "estimator": _infer_final_estimator_name(predictor),
+        "roc_auc": auc,
+        "confusion_matrix": cm.tolist(),
+        "classification_report": report,
+    }
+
 # Load resources
 model = load_model()
 df = load_dataset()
@@ -854,23 +972,56 @@ elif page == "📊 Dataset & EDA":
         if selected_uni is not None:
             s = df[selected_uni]
             if _is_numeric(s):
-                nbins = st.slider("Histogram bins", min_value=10, max_value=80, value=30, step=5)
-                fig_uni = px.histogram(
-                    df,
-                    x=selected_uni,
-                    nbins=nbins,
-                    barmode='overlay' if hue else 'relative',
-                    title=f"Distribution of {selected_uni}",
-                    **facet_args,
+                chart_type = st.selectbox(
+                    "Chart type (numeric)",
+                    ["Histogram", "Box", "Violin"],
+                    index=0,
                 )
+                nbins = st.slider("Histogram bins", min_value=10, max_value=80, value=30, step=5)
+                if chart_type == "Histogram":
+                    fig_uni = px.histogram(
+                        df,
+                        x=selected_uni,
+                        nbins=nbins,
+                        barmode='overlay' if hue else 'relative',
+                        title=f"Distribution of {selected_uni}",
+                        **facet_args,
+                    )
+                elif chart_type == "Box":
+                    fig_uni = px.box(
+                        df,
+                        x=hue if hue in df.columns else None,
+                        y=selected_uni,
+                        points="outliers",
+                        title=f"Box plot: {selected_uni}",
+                    )
+                else:
+                    fig_uni = px.violin(
+                        df,
+                        x=hue if hue in df.columns else None,
+                        y=selected_uni,
+                        box=True,
+                        points="outliers",
+                        title=f"Violin plot: {selected_uni}",
+                    )
             else:
+                chart_type = st.selectbox(
+                    "Chart type (categorical)",
+                    ["Bar", "Pie"],
+                    index=0,
+                )
                 fig_uni = px.histogram(
                     df,
                     x=selected_uni,
                     title=f"Counts for {selected_uni}",
                     **facet_args,
                 )
-                fig_uni.update_layout(bargap=0.2)
+                if chart_type == "Pie":
+                    counts = df[selected_uni].astype(str).value_counts(dropna=False).reset_index()
+                    counts.columns = [selected_uni, "count"]
+                    fig_uni = px.pie(counts, names=selected_uni, values="count", title=f"Share of {selected_uni}")
+                else:
+                    fig_uni.update_layout(bargap=0.2)
             st.plotly_chart(fig_uni, use_container_width=True)
 
         st.markdown("---")
@@ -890,6 +1041,13 @@ elif page == "📊 Dataset & EDA":
             x_is_num = _is_numeric(df_plot[x_col])
             y_is_num = _is_numeric(df_plot[y_col])
             if x_is_num and y_is_num:
+                chart_type = st.selectbox("Chart type", ["Scatter", "2D Density"], index=0)
+            elif x_is_num ^ y_is_num:
+                chart_type = st.selectbox("Chart type", ["Box", "Violin"], index=0)
+            else:
+                chart_type = st.selectbox("Chart type", ["Heatmap"], index=0)
+
+            if x_is_num and y_is_num:
                 add_trendline = st.checkbox("Add OLS trendline", value=False)
                 trend_arg = None
                 if add_trendline:
@@ -900,32 +1058,63 @@ elif page == "📊 Dataset & EDA":
                         trend_arg = None
                     else:
                         trend_arg = "ols"
-                fig_bi = px.scatter(
-                    df_plot,
-                    x=x_col,
-                    y=y_col,
-                    title=f"{y_col} vs {x_col}",
-                    trendline=trend_arg,
-                    **facet_args,
-                )
+                if chart_type == "2D Density":
+                    fig_bi = px.density_heatmap(
+                        df_plot,
+                        x=x_col,
+                        y=y_col,
+                        title=f"2D density: {y_col} vs {x_col}",
+                        **facet_args,
+                    )
+                else:
+                    fig_bi = px.scatter(
+                        df_plot,
+                        x=x_col,
+                        y=y_col,
+                        title=f"{y_col} vs {x_col}",
+                        trendline=trend_arg,
+                        **facet_args,
+                    )
             elif x_is_num and not y_is_num:
-                fig_bi = px.box(
-                    df_plot,
-                    x=y_col,
-                    y=x_col,
-                    points='outliers',
-                    title=f"{x_col} by {y_col}",
-                    **facet_args,
-                )
+                if chart_type == "Violin":
+                    fig_bi = px.violin(
+                        df_plot,
+                        x=y_col,
+                        y=x_col,
+                        box=True,
+                        points='outliers',
+                        title=f"{x_col} by {y_col}",
+                        **facet_args,
+                    )
+                else:
+                    fig_bi = px.box(
+                        df_plot,
+                        x=y_col,
+                        y=x_col,
+                        points='outliers',
+                        title=f"{x_col} by {y_col}",
+                        **facet_args,
+                    )
             elif (not x_is_num) and y_is_num:
-                fig_bi = px.box(
-                    df_plot,
-                    x=x_col,
-                    y=y_col,
-                    points='outliers',
-                    title=f"{y_col} by {x_col}",
-                    **facet_args,
-                )
+                if chart_type == "Violin":
+                    fig_bi = px.violin(
+                        df_plot,
+                        x=x_col,
+                        y=y_col,
+                        box=True,
+                        points='outliers',
+                        title=f"{y_col} by {x_col}",
+                        **facet_args,
+                    )
+                else:
+                    fig_bi = px.box(
+                        df_plot,
+                        x=x_col,
+                        y=y_col,
+                        points='outliers',
+                        title=f"{y_col} by {x_col}",
+                        **facet_args,
+                    )
             else:
                 fig_bi = px.density_heatmap(
                     df_plot,
@@ -1483,43 +1672,92 @@ elif page == "🛠 Diagnostics":
 elif page == "📈 Model Performance":
     st.title("📈 Model Performance Metrics")
 
-    if isinstance(model, ProductionLudoPredictor):
-        st.markdown(
-            f"### Loaded Production Model: {model.artifact.get('model_variant', 'unknown')} ({_infer_final_estimator_name(model)})"
+    rf_prod_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
+    gb_prod_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+
+    prod_rf = load_production_model_from_path(rf_prod_path) if rf_prod_path.exists() else None
+    prod_gb = load_production_model_from_path(gb_prod_path) if gb_prod_path.exists() else None
+
+    options: list[str] = []
+    if isinstance(prod_rf, ProductionLudoPredictor):
+        options.append("Advanced RF (Feature Engineering Notebook)")
+    if isinstance(prod_gb, ProductionLudoPredictor):
+        options.append("Gradient Boosting (Production GB)")
+
+    if not options:
+        st.error(
+            "No production model artifacts found. Expected at least one of: "
+            "jupyter_notebooks/model/production_rf_predictor.pkl or jupyter_notebooks/model/production_ludo_predictor.pkl"
         )
-        st.caption(f"Decision threshold: {model.decision_threshold:.2f}")
-    else:
-        st.markdown("### Model Performance (static reference)")
+        st.stop()
+
+    selected = st.selectbox("Choose model to evaluate", options, index=0)
+    active_path = rf_prod_path if selected.startswith("Advanced RF") else gb_prod_path
+
+    ds_path = _get_dataset_source_path()
+    if ds_path is None:
+        st.error("Dataset not found; cannot compute classification report.")
+        st.stop()
+    stat = ds_path.stat()
+    dataset_signature = (str(ds_path), int(stat.st_mtime_ns), int(stat.st_size))
+
+    st.markdown("---")
+    st.subheader("🎛️ Evaluation Controls")
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        eval_unit = st.selectbox(
+            "Evaluation unit",
+            [
+                "Turn-level rows (each move)",
+                "Final state per Game_ID + Player",
+            ],
+            index=0,
+            help=(
+                "Turn-level evaluates every row. Final state reduces to one row per Game_ID+Player "
+                "using the last observed turn (closer to a per-game/player summary)."
+            ),
+        )
+    with col_b:
+        sample_n = st.slider(
+            "Rows to evaluate (0 = all)",
+            min_value=0,
+            max_value=max(1000, len(df) if df is not None else 10_000),
+            value=0,
+            step=500,
+            help="Use a smaller sample if the page feels slow.",
+        )
+    with col_c:
+        random_state = st.number_input("Random state (sampling)", min_value=0, value=42, step=1)
+
+    with st.spinner("Evaluating model on current dataset…"):
+        eval_out = _evaluate_production_model(
+            str(active_path),
+            dataset_signature,
+            str(eval_unit),
+            int(sample_n),
+            int(random_state),
+        )
+
+    st.caption(
+        "Live evaluation computed from the current dataset file. "
+        "This may differ from the original notebook test split."
+    )
+
+    if eval_out.get("eval_unit") == "final_state":
+        st.info("Evaluation unit: final state per Game_ID + Player (one row per player per game).")
     
     st.markdown("---")
     
     ### Performance Summary
     st.subheader("🎯 Performance Metrics")
 
-    metrics = _extract_test_metrics(model) if isinstance(model, ProductionLudoPredictor) else None
-    acc = metrics.get("accuracy") if isinstance(metrics, dict) else None
-    prec1 = (
-        metrics.get("precision_class_1")
-        if isinstance(metrics, dict) and "precision_class_1" in metrics
-        else metrics.get("precision")
-        if isinstance(metrics, dict)
-        else None
-    )
-    rec1 = (
-        metrics.get("recall_class_1")
-        if isinstance(metrics, dict) and "recall_class_1" in metrics
-        else metrics.get("recall")
-        if isinstance(metrics, dict)
-        else None
-    )
-    f11 = (
-        metrics.get("f1_class_1")
-        if isinstance(metrics, dict) and "f1_class_1" in metrics
-        else metrics.get("f1")
-        if isinstance(metrics, dict)
-        else None
-    )
-    auc = metrics.get("roc_auc") if isinstance(metrics, dict) else None
+    report = eval_out.get("classification_report", {})
+    acc = report.get("accuracy") if isinstance(report, dict) else None
+    class_1 = report.get("1") if isinstance(report, dict) else None
+    prec1 = class_1.get("precision") if isinstance(class_1, dict) else None
+    rec1 = class_1.get("recall") if isinstance(class_1, dict) else None
+    f11 = class_1.get("f1-score") if isinstance(class_1, dict) else None
+    auc = eval_out.get("roc_auc")
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -1530,14 +1768,14 @@ elif page == "📈 Model Performance":
     with col2:
         st.metric("F1-Score (Class 1)", f"{f11:.3f}" if isinstance(f11, (int, float)) else "N/A")
         st.metric("ROC-AUC", f"{auc:.3f}" if isinstance(auc, (int, float)) else "N/A")
-        thr = model.decision_threshold if isinstance(model, ProductionLudoPredictor) else None
+        thr = eval_out.get("threshold")
         st.metric("Decision Threshold", f"{thr:.2f}" if isinstance(thr, (int, float)) else "N/A")
 
     with col3:
-        algo = _infer_final_estimator_name(model) if isinstance(model, ProductionLudoPredictor) else "Unknown"
-        feat_count = len(model.feature_columns) if isinstance(model, ProductionLudoPredictor) else 0
-        n_train = metrics.get("n_train") if isinstance(metrics, dict) else None
-        n_test = metrics.get("n_test") if isinstance(metrics, dict) else None
+        algo = str(eval_out.get("estimator", "Unknown"))
+        feat_count = 0
+        n_train = None
+        n_test = eval_out.get("n")
 
         st.markdown(
             "\n".join(
@@ -1547,7 +1785,7 @@ elif page == "📈 Model Performance":
                     f"- **Training Samples**: {int(n_train)}" if isinstance(n_train, (int, float)) else "- **Training Samples**: N/A",
                     f"- **Test Samples**: {int(n_test)}" if isinstance(n_test, (int, float)) else "- **Test Samples**: N/A",
                     f"- **Features Used**: {feat_count} engineered/model inputs",
-                    "- **Primary Estimator**: Random Forest (when RF artifact exists)",
+                    f"- **Model Variant**: {eval_out.get('model_variant', 'unknown')}",
                 ]
             )
         )
@@ -1556,34 +1794,33 @@ elif page == "📈 Model Performance":
     
     ### Confusion Matrix
     st.subheader("🔍 Confusion Matrix")
-    st.markdown("Illustrative confusion matrix (exact counts depend on the evaluation split).")
-    
-    # Simulated confusion matrix (from notebook context)
-    cm_data = np.array([[800, 150], [120, 390]])  # Example values
-    
-    fig_cm = go.Figure(data=go.Heatmap(
-        z=cm_data,
-        x=['Predicted Non-Winner', 'Predicted Winner'],
-        y=['Actual Non-Winner', 'Actual Winner'],
-        text=cm_data,
-        texttemplate='%{text}',
-        colorscale='Blues'
-    ))
+    cm_data = np.asarray(eval_out.get("confusion_matrix", [[0, 0], [0, 0]]), dtype=int)
+
+    fig_cm = go.Figure(
+        data=go.Heatmap(
+            z=cm_data,
+            x=['Predicted Non-Winner', 'Predicted Winner'],
+            y=['Actual Non-Winner', 'Actual Winner'],
+            text=cm_data,
+            texttemplate='%{text}',
+            colorscale='Blues',
+        )
+    )
     fig_cm.update_layout(
-        title="Confusion Matrix (Illustrative)",
+        title="Confusion Matrix",
         xaxis_title="Predicted Label",
         yaxis_title="Actual Label",
         height=400
     )
     st.plotly_chart(fig_cm, use_container_width=True)
-    
-    st.markdown("**Interpretation:**")
-    st.markdown("""
-    - **True Negatives (800)**: Correctly predicted non-winners
-    - **False Positives (150)**: Incorrectly predicted as winners (Type I error)
-    - **False Negatives (120)**: Missed winner predictions (Type II error)
-    - **True Positives (390)**: Correctly predicted winners
-    """)
+
+    with st.expander("Classification report (precision/recall/F1)", expanded=True):
+        report_dict = eval_out.get("classification_report", {})
+        if isinstance(report_dict, dict):
+            report_df = pd.DataFrame(report_dict).T
+            st.dataframe(report_df, use_container_width=True)
+        else:
+            st.info("Classification report not available")
     
     st.markdown("---")
     

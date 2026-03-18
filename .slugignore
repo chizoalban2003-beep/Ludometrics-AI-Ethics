@@ -1,2 +1,5 @@
-jupyter_notebooks/*
+# Keep production artifacts under jupyter_notebooks/model/.
+# Exclude notebooks and scratch notebook folders from the Heroku slug.
+jupyter_notebooks/*.ipynb
+jupyter_notebooks/jupyter_notebooks/
 README.md

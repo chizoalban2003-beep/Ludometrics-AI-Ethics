@@ -461,6 +461,38 @@ def _show_model_inputs(X_model: pd.DataFrame) -> None:
         else:
             st.dataframe(X_model, use_container_width=True)
 
+
+def _render_feature_engineering_formulas() -> None:
+    """Render the feature-engineering equations used by `_engineer_features()`."""
+    st.markdown("**Feature engineering used by the app**")
+    st.caption(
+        "The app recreates engineered interaction features at inference time using the same "
+        "rules as the Feature Engineering notebook."
+    )
+
+    st.markdown("**1) MWU pair weight**")
+    st.latex(r"w_{pair} = \frac{w_1 + w_2}{2}")
+
+    st.markdown("**2) Blended coefficient (Spearman + MWU)**")
+    st.latex(r"c_{blend} = \rho \times (0.25 + 0.75 \cdot w_{pair})")
+
+    st.markdown("**3) Transform by correlation category**")
+    st.markdown(
+        "- Strong + Positive: ratio\n"
+        "- Strong + Negative: interaction\n"
+        "- Weak + Negative: composite"
+    )
+    st.latex(r"T_{sp}(f_1, f_2) = \frac{f_1}{f_2 + \varepsilon}")
+    st.latex(r"T_{sn}(f_1, f_2) = f_1 \times f_2")
+    st.latex(r"T_{wn}(f_1, f_2) = (f_1 f_2) - (\sqrt{|\frac{f_1}{f_2 + \varepsilon}|} + \frac{f_1}{f_2 + \varepsilon})")
+
+    st.markdown("**4) Engineered feature value**")
+    st.latex(r"f_{eng} = T(f_1, f_2) \times c_{blend}")
+
+    st.markdown("**5) Post-engineering MWU scaling (floor 0.10)**")
+    st.latex(r"w_{extra} = \max(w_{pair},\ 0.10)")
+    st.latex(r"f_{eng}^{final} = f_{eng} \times w_{extra}")
+
 @st.cache_resource
 def _load_model_artifact():
     """Load the legacy GB production artifact from disk.
@@ -1557,6 +1589,9 @@ elif page == "🎯 Model Prediction":
                             st.caption(f"Decision threshold: {active_model.decision_threshold:.2f}")
 
                         _show_model_inputs(X_model)
+
+                        with st.expander("Feature engineering formulas (what the app computes)", expanded=False):
+                            _render_feature_engineering_formulas()
                     
                     except Exception as e:
                         st.error(f"Prediction failed: {str(e)}")
@@ -1570,6 +1605,9 @@ elif page == "🎯 Model Prediction":
 elif page == "🛠 Diagnostics":
     st.title("🛠 Diagnostics")
     st.markdown("Useful checks for debugging data/model loading and common runtime issues.")
+
+    with st.expander("Feature engineering formulas used in-app", expanded=False):
+        _render_feature_engineering_formulas()
 
     col_a, col_b = st.columns([1, 3])
     with col_a:

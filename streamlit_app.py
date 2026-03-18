@@ -2240,13 +2240,25 @@ elif page == "📈 Model Performance":
 # ============================================================================
 
 st.markdown("---")
-st.markdown("""
-### 📚 Project Links
-- [GitHub Repository](https://github.com/chizoalban2003/ludomaniac)
-- [Feature Engineering Notebook](jupyter_notebooks/Feature_engineering.ipynb)
-- [EDA Notebook](jupyter_notebooks/Ludo_EDA.ipynb)
-- [Dataset Creation](jupyter_notebooks/create_dataset.ipynb)
-- [README](README.md)
 
-**Built with** 🎲 Streamlit | 🐍 Python | 🤖 Scikit-Learn
-""")
+REPO_URL = "https://github.com/chizoalban2003/ludomaniac"
+REPO_BRANCH = "main"
+
+
+def _repo_blob_url(path: str) -> str:
+    path = str(path).lstrip("/")
+    return f"{REPO_URL}/blob/{REPO_BRANCH}/{path}"
+
+
+st.markdown("### 📚 Project Links")
+col_a, col_b, col_c = st.columns(3)
+with col_a:
+    st.link_button("GitHub Repository", REPO_URL)
+    st.link_button("README", _repo_blob_url("README.md"))
+with col_b:
+    st.link_button("Feature Engineering Notebook", _repo_blob_url("jupyter_notebooks/Feature_engineering.ipynb"))
+    st.link_button("EDA Notebook", _repo_blob_url("jupyter_notebooks/Ludo_EDA.ipynb"))
+with col_c:
+    st.link_button("Dataset Creation Notebook", _repo_blob_url("jupyter_notebooks/create_dataset.ipynb"))
+
+st.caption("Built with Streamlit • Python • scikit-learn")

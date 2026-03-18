@@ -462,6 +462,115 @@ def _show_model_inputs(X_model: pd.DataFrame) -> None:
             st.dataframe(X_model, use_container_width=True)
 
 
+def _bounce_position_after(position_before: float, dice_roll: int, finish_pos: int = 57) -> float:
+    """Compute Position_After using the same bounce-back rule as dataset generation.
+
+    Notes:
+    - Home is represented as 0.
+    - If position_before is 0, only a dice roll of 6 enters the board to 1.
+    - Overshooting finish_pos bounces back.
+    """
+    try:
+        pos = float(position_before)
+    except Exception:
+        return 0.0
+
+    try:
+        roll = int(dice_roll)
+    except Exception:
+        roll = 0
+
+    if pos <= 0:
+        return 1.0 if roll == 6 else 0.0
+
+    target = pos + roll
+    if target > float(finish_pos):
+        return float(finish_pos) - (target - float(finish_pos))
+    return float(target)
+
+
+def _render_guided_play_instructions() -> None:
+    st.markdown("### How to use AI-guided play")
+    st.markdown(
+        "- Roll the dice in the real game.\n"
+        "- If you have more than one legal move, enter each move as an option.\n"
+        "- Click **Compare moves**. Choose the option with the highest **Winner Probability**.\n"
+        "- This is guidance based on simulated games; it is not a guarantee."
+    )
+    with st.expander("Glossary (simple English)", expanded=False):
+        st.markdown(
+            "- **Winner Probability**: the model's estimate that this player will eventually win.\n"
+            "- **Turn**: the turn number (1, 2, 3, ...).\n"
+            "- **Position_Before / Position_After**: token position before/after the move (0 means home).\n"
+            "- **Tokens_Home / Active / Finished**: how many of your 4 tokens are at home, on the board, or finished.\n"
+            "- **Captured_Opponent**: set to 1 if your move captures an opponent token, else 0."
+        )
+
+
+def _choose_active_model_ui(
+    base_model: "ProductionLudoPredictor",
+    df_ref: pd.DataFrame,
+) -> "ProductionLudoPredictor":
+    """UI helper shared by Model Prediction and Guided Play pages."""
+    rf_prod_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
+    gb_prod_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
+    gb_legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    if not gb_prod_path.exists() and gb_legacy_path.exists():
+        gb_prod_path = gb_legacy_path
+
+    prod_rf = load_production_model_from_path(rf_prod_path) if rf_prod_path.exists() else None
+    prod_gb = load_production_model_from_path(gb_prod_path) if gb_prod_path.exists() else None
+
+    options: list[str] = []
+    if isinstance(prod_rf, ProductionLudoPredictor):
+        options.append("Advanced RF (Feature Engineering Notebook)")
+    if isinstance(prod_gb, ProductionLudoPredictor):
+        options.append("Gradient Boosting (Production GB)")
+    options.append("Experimental RF (Train In-App)")
+
+    default_choice = (
+        "Advanced RF (Feature Engineering Notebook)"
+        if "Advanced RF (Feature Engineering Notebook)" in options
+        else options[0]
+    )
+    model_choice = st.selectbox(
+        "Choose model",
+        options,
+        index=options.index(default_choice),
+        help=(
+            "Advanced RF is loaded from the notebook export artifact. "
+            "Gradient Boosting is the calibrated GB fallback. Experimental RF trains from the current dataset (cached)."
+        ),
+    )
+
+    if model_choice == "Advanced RF (Feature Engineering Notebook)":
+        if not isinstance(prod_rf, ProductionLudoPredictor):
+            st.error("Saved RF artifact not found. Expected at jupyter_notebooks/model/production_rf_predictor.pkl")
+            st.stop()
+        active_model = prod_rf
+    elif model_choice == "Gradient Boosting (Production GB)":
+        if not isinstance(prod_gb, ProductionLudoPredictor):
+            st.error(
+                "Saved GB artifact not found. Expected at jupyter_notebooks/model/production_gb_predictor.pkl "
+                "(or legacy jupyter_notebooks/model/production_ludo_predictor.pkl)"
+            )
+            st.stop()
+        active_model = prod_gb
+    else:
+        with st.spinner("Training experimental Random Forest (cached)…"):
+            active_model = _train_experimental_random_forest_predictor(df_ref, tuple(base_model.feature_columns))
+        st.info(
+            "Using Experimental Random Forest. Metrics are computed on a held-out split from the current dataset."
+        )
+
+    st.caption(
+        f"Active model: {active_model.artifact.get('model_variant', 'unknown')} | "
+        f"Estimator: {_infer_final_estimator_name(active_model)} | "
+        f"Threshold: {active_model.decision_threshold:.2f}"
+    )
+    return active_model
+
+
 def _render_feature_engineering_formulas() -> None:
     """Render the feature-engineering equations used by `_engineer_features()`."""
     st.markdown("**Feature engineering used by the app**")
@@ -861,13 +970,14 @@ audience = st.sidebar.radio(
 )
 
 PAGES_BY_AUDIENCE: dict[str, list[str]] = {
-    "Non-technical": ["🏠 Overview", "🎯 Model Prediction", "📈 Model Performance"],
-    "Semi-technical": ["🏠 Overview", "📊 Dataset & EDA", "🎯 Model Prediction", "📈 Model Performance"],
+    "Non-technical": ["🏠 Overview", "🎯 Model Prediction", "🧭 Guided Play", "📈 Model Performance"],
+    "Semi-technical": ["🏠 Overview", "📊 Dataset & EDA", "🎯 Model Prediction", "🧭 Guided Play", "📈 Model Performance"],
     "Technical": [
         "🏠 Overview",
         "📊 Dataset & EDA",
         "🔧 Feature Engineering",
         "🎯 Model Prediction",
+        "🧭 Guided Play",
         "📈 Model Performance",
         "🛠 Diagnostics",
     ],
@@ -1417,63 +1527,7 @@ elif page == "🎯 Model Prediction":
             st.stop()
 
         st.markdown("---")
-        rf_prod_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
-        gb_prod_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
-        gb_legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
-        if not gb_prod_path.exists() and gb_legacy_path.exists():
-            gb_prod_path = gb_legacy_path
-
-        prod_rf = load_production_model_from_path(rf_prod_path) if rf_prod_path.exists() else None
-        prod_gb = load_production_model_from_path(gb_prod_path) if gb_prod_path.exists() else None
-
-        options: list[str] = []
-        if isinstance(prod_rf, ProductionLudoPredictor):
-            options.append("Advanced RF (Feature Engineering Notebook)")
-        if isinstance(prod_gb, ProductionLudoPredictor):
-            options.append("Gradient Boosting (Production GB)")
-        options.append("Experimental RF (Train In-App)")
-
-        default_choice = (
-            "Advanced RF (Feature Engineering Notebook)"
-            if "Advanced RF (Feature Engineering Notebook)" in options
-            else options[0]
-        )
-        model_choice = st.selectbox(
-            "Choose model",
-            options,
-            index=options.index(default_choice),
-            help=(
-                "Advanced RF is loaded from the notebook export artifact. "
-                "Gradient Boosting is the calibrated GB fallback. Experimental RF trains from the current dataset (cached)."
-            ),
-        )
-
-        if model_choice == "Advanced RF (Feature Engineering Notebook)":
-            if not isinstance(prod_rf, ProductionLudoPredictor):
-                st.error(
-                    "Saved RF artifact not found. Expected at jupyter_notebooks/model/production_rf_predictor.pkl"
-                )
-                st.stop()
-            active_model = prod_rf
-        elif model_choice == "Gradient Boosting (Production GB)":
-            if not isinstance(prod_gb, ProductionLudoPredictor):
-                st.error(
-                    "Saved GB artifact not found. Expected at jupyter_notebooks/model/production_gb_predictor.pkl "
-                    "(or legacy jupyter_notebooks/model/production_ludo_predictor.pkl)"
-                )
-                st.stop()
-            active_model = prod_gb
-        else:
-            with st.spinner("Training experimental Random Forest (cached)…"):
-                active_model = _train_experimental_random_forest_predictor(df, tuple(model.feature_columns))
-            st.info("Using Experimental Random Forest. Metrics are computed on a held-out split from the current dataset.")
-
-        if isinstance(active_model, ProductionLudoPredictor):
-            st.caption(
-                f"Active model: {active_model.artifact.get('model_variant', 'unknown')} | "
-                f"Estimator: {_infer_final_estimator_name(active_model)} | "
-                f"Threshold: {active_model.decision_threshold:.2f}"
-            )
+        active_model = _choose_active_model_ui(model, df)
 
         # Raw input columns (the app's cleaned dataset schema)
         base_numeric = [
@@ -1597,6 +1651,192 @@ elif page == "🎯 Model Prediction":
                         st.error(f"Prediction failed: {str(e)}")
             else:
                 st.warning("Dataset or features not available for samples.")
+
+# ==========================================================================
+# PAGE 4B: GUIDED PLAY (AI-ASSISTED)
+# ==========================================================================
+
+elif page == "🧭 Guided Play":
+    st.title("🧭 Guided Play (AI-assisted)")
+    st.markdown(
+        "Use the model to compare multiple *legal* move options for the same dice roll. "
+        "This is ideal for demonstrations to new/foreign audiences: you play the physical/real game, "
+        "and the app provides a clear probability-based recommendation."
+    )
+
+    if model is None:
+        st.error("Model could not be loaded. Please ensure the model artifact exists.")
+        st.stop()
+    if not isinstance(model, ProductionLudoPredictor):
+        st.error("Loaded model is not the expected production predictor wrapper.")
+        st.stop()
+    if df is None:
+        st.error("Dataset could not be loaded; inference feature engineering requires the reference dataset.")
+        st.stop()
+
+    _render_guided_play_instructions()
+    st.markdown("---")
+
+    active_model = _choose_active_model_ui(model, df)
+
+    st.subheader("Step 1 — Enter shared turn information")
+    player_options = (
+        sorted(df["Player"].dropna().astype(str).unique().tolist()) if "Player" in df.columns else ["Red"]
+    )
+    if not player_options:
+        player_options = ["Red", "Blue", "Green", "Yellow"]
+
+    common_left, common_right = st.columns(2)
+    with common_left:
+        player = st.selectbox(
+            "Player (whose move is being evaluated)",
+            player_options,
+            index=player_options.index("Red") if "Red" in player_options else 0,
+        )
+        turn = st.number_input("Turn", min_value=0, value=1, step=1)
+        dice_roll = st.number_input("Dice_Roll", min_value=0, max_value=6, value=1, step=1)
+    with common_right:
+        tokens_home = st.number_input("Tokens_Home", min_value=0, max_value=4, value=3, step=1)
+        tokens_active = st.number_input("Tokens_Active", min_value=0, max_value=4, value=1, step=1)
+        tokens_finished = st.number_input("Tokens_Finished", min_value=0, max_value=4, value=0, step=1)
+
+    if int(tokens_home) + int(tokens_active) + int(tokens_finished) != 4:
+        st.warning("Token counts typically sum to 4 for a player. Continue if using a different encoding.")
+
+    st.subheader("Step 2 — Enter your move options")
+    num_options = st.slider("How many move options to compare?", min_value=2, max_value=4, value=2, step=1)
+    finish_pos = st.number_input(
+        "Finish position used for auto-calculation",
+        min_value=10,
+        max_value=100,
+        value=57,
+        step=1,
+        help="Used only if you enable auto-calc for Position_After (bounce-back rule).",
+    )
+
+    options_payload: list[dict[str, Any]] = []
+    option_letters = [chr(ord("A") + i) for i in range(int(num_options))]
+    for i, letter in enumerate(option_letters):
+        with st.expander(f"Option {letter}", expanded=(i == 0)):
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col1:
+                token_moved = st.number_input(
+                    f"Token_Moved (Option {letter})",
+                    min_value=0,
+                    max_value=4,
+                    value=1,
+                    step=1,
+                    key=f"gp_tok_{letter}",
+                )
+                captured = st.number_input(
+                    f"Captured_Opponent (0/1) (Option {letter})",
+                    min_value=0,
+                    max_value=1,
+                    value=0,
+                    step=1,
+                    key=f"gp_cap_{letter}",
+                )
+            with col2:
+                pos_before = st.number_input(
+                    f"Position_Before (Option {letter})",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    key=f"gp_posb_{letter}",
+                )
+                auto_after = st.checkbox(
+                    f"Auto-calc Position_After from Dice_Roll (Option {letter})",
+                    value=True,
+                    key=f"gp_auto_{letter}",
+                )
+            with col3:
+                computed_after = _bounce_position_after(pos_before, int(dice_roll), int(finish_pos))
+                pos_after = st.number_input(
+                    f"Position_After (Option {letter})",
+                    min_value=0.0,
+                    value=float(computed_after),
+                    step=1.0,
+                    key=f"gp_posa_{letter}",
+                    disabled=bool(auto_after),
+                )
+                if auto_after:
+                    pos_after = float(computed_after)
+
+            options_payload.append(
+                {
+                    "option": letter,
+                    "Token_Moved": int(token_moved),
+                    "Position_Before": float(pos_before),
+                    "Position_After": float(pos_after),
+                    "Captured_Opponent": int(captured),
+                }
+            )
+
+    if st.button("🧮 Compare moves"):
+        try:
+            raw_rows = []
+            for opt in options_payload:
+                raw_rows.append(
+                    {
+                        "Game_ID": 0,
+                        "Player": player,
+                        "Turn": int(turn),
+                        "Dice_Roll": int(dice_roll),
+                        "Token_Moved": int(opt["Token_Moved"]),
+                        "Position_Before": float(opt["Position_Before"]),
+                        "Position_After": float(opt["Position_After"]),
+                        "Tokens_Home": int(tokens_home),
+                        "Tokens_Active": int(tokens_active),
+                        "Tokens_Finished": int(tokens_finished),
+                        "Captured_Opponent": int(opt["Captured_Opponent"]),
+                    }
+                )
+
+            raw_df = pd.DataFrame(raw_rows)
+            X_model = _prepare_model_matrix(raw_df, active_model)
+            proba = np.asarray(active_model.predict_proba(X_model))
+            y_hat = np.asarray(active_model.predict(X_model)).astype(int)
+
+            results = []
+            for idx, opt in enumerate(options_payload):
+                p_nonwin = float(proba[idx, 0]) if proba.ndim == 2 and proba.shape[1] >= 2 else float("nan")
+                p_win = float(proba[idx, 1]) if proba.ndim == 2 and proba.shape[1] >= 2 else float("nan")
+                results.append(
+                    {
+                        "Option": opt["option"],
+                        "Predicted Class": "WINNER" if int(y_hat[idx]) == 1 else "NON-WINNER",
+                        "Winner Probability": p_win,
+                        "Non-Winner Probability": p_nonwin,
+                        "Token_Moved": int(opt["Token_Moved"]),
+                        "Position_Before": float(opt["Position_Before"]),
+                        "Position_After": float(opt["Position_After"]),
+                        "Captured_Opponent": int(opt["Captured_Opponent"]),
+                    }
+                )
+
+            results_df = pd.DataFrame(results).sort_values("Winner Probability", ascending=False)
+            best = results_df.iloc[0]
+            st.markdown("---")
+            st.subheader("Recommendation")
+            st.success(
+                f"Recommended move: **Option {best['Option']}** (Winner Probability: {best['Winner Probability']:.1%})"
+            )
+            st.caption(
+                "Tip for demos: if probabilities are close, tell the audience the moves are roughly equivalent "
+                "and choose the move that is simpler to explain."
+            )
+
+            st.subheader("Move comparison")
+            view_df = results_df.copy()
+            view_df["Winner Probability"] = view_df["Winner Probability"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
+            view_df["Non-Winner Probability"] = view_df["Non-Winner Probability"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
+            st.dataframe(view_df, use_container_width=True, hide_index=True)
+
+            _show_model_inputs(X_model)
+
+        except Exception as e:
+            st.error(f"Comparison failed: {e}")
+
 
 # ============================================================================
 # PAGE 6: DIAGNOSTICS (TECHNICAL)

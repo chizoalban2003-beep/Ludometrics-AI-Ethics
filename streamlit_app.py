@@ -508,6 +508,51 @@ def _render_guided_play_instructions() -> None:
         )
 
 
+def _render_guided_play_or_game_theory_optimization(audience_level: str) -> None:
+    audience_norm = str(audience_level or "").strip().lower()
+    expanded = audience_norm.startswith("non")
+    title = "Why this mirrors OR, game theory, and optimization"
+
+    with st.expander(title, expanded=expanded):
+        if audience_norm.startswith("non"):
+            st.markdown(
+                "This page helps you choose between a few options when you have uncertainty (a dice roll) and opponents.\n\n"
+                "- **Operations research (OR):** making good decisions in a system that changes over time.\n"
+                "- **Game theory:** making decisions when other players are trying to win too.\n"
+                "- **Optimization:** comparing options and picking the best one.\n\n"
+                "In business, this looks like choosing between two plans, two priorities, or two ways to use limited resources."
+            )
+            st.caption(
+                "Tip: If two options have similar probabilities, either choice is reasonable — pick the one that is simpler to explain."
+            )
+            return
+
+        tabs = st.tabs(["Operations Research", "Game Theory", "Optimization"])
+
+        with tabs[0]:
+            st.markdown(
+                "**OR view:** this is a stochastic, state-based process.\n\n"
+                "- Inputs (Turn, token counts, positions) are a compact **state** description.\n"
+                "- Each move option is a **decision**.\n"
+                "- The model approximates outcome likelihood, acting like a fast surrogate for simulation/analysis."
+            )
+
+        with tabs[1]:
+            st.markdown(
+                "**Game theory view:** your outcome depends on opponents and interaction.\n\n"
+                "- Captures represent direct adversarial interaction (one player's gain can reset another).\n"
+                "- Comparing options A vs B is like comparing **strategies** (aggressive vs safe) under uncertainty."
+            )
+
+        with tabs[2]:
+            st.markdown(
+                "**Optimization view:** choose the best action among feasible actions.\n\n"
+                "- Feasible set = the legal move options you enter (A/B/C/D).\n"
+                "- Objective proxy = maximize predicted win probability.\n"
+            )
+            st.latex(r"\text{Choose } a^* = \arg\max_{a \in \mathcal{A}} \; \hat{P}(\text{win} \mid \text{state}, a)")
+
+
 def _choose_active_model_ui(
     base_model: "ProductionLudoPredictor",
     df_ref: pd.DataFrame,
@@ -1731,6 +1776,7 @@ elif page == "🧭 Guided Play":
         st.stop()
 
     _render_guided_play_instructions()
+    _render_guided_play_or_game_theory_optimization(audience)
     st.markdown("---")
 
     active_model = _choose_active_model_ui(model, df)

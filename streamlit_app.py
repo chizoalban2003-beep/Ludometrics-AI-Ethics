@@ -1077,6 +1077,61 @@ if page == "🏠 Overview":
     4. **Model Performance**: Review model metrics, confusion matrix, and ROC-AUC curve
     """)
 
+    st.markdown("---")
+
+    st.subheader("🧠 Business Lens: OR → Game Theory → Optimization")
+    st.caption(
+        "This project is intentionally structured as a business decision workflow: simulate a system, learn from outcomes, "
+        "and use the trained artifact to guide decisions under uncertainty and competition."
+    )
+
+    with st.expander("Concept mapping (Ludo → business)", expanded=False):
+        mapping_rows = [
+            {"Ludo concept": "Dice_Roll (randomness)", "Business analogue": "Demand / arrivals / shocks (stochasticity)"},
+            {"Ludo concept": "Turn (time step)", "Business analogue": "Period, stage, or decision epoch"},
+            {"Ludo concept": "Tokens_Home / Active / Finished", "Business analogue": "Backlog / WIP / completed work"},
+            {"Ludo concept": "Position_Before / After", "Business analogue": "Progress/state of a job/project"},
+            {"Ludo concept": "Captured_Opponent", "Business analogue": "Disruption, rework, rollback, competitive loss"},
+            {"Ludo concept": "Choosing a token to move", "Business analogue": "Resource allocation / prioritization decision"},
+            {"Ludo concept": "Winner Probability", "Business analogue": "Risk score / success likelihood / expected utility proxy"},
+            {"Ludo concept": "Decision threshold", "Business analogue": "Operational decision boundary (act vs wait)"},
+        ]
+        st.dataframe(pd.DataFrame(mapping_rows), use_container_width=True, hide_index=True)
+
+    tabs = st.tabs(["1) Operations Research", "2) Game Theory", "3) Optimization"])
+
+    with tabs[0]:
+        st.markdown(
+            "**OR framing:** Ludo is a small, stochastic, state-based system.\n\n"
+            "- The dataset is a **simulation log** of a dynamic process (state → decision → next state).\n"
+            "- Feature engineering is analogous to building **state descriptors** (signals) used for policy decisions.\n"
+            "- The model artifact is a fast, reusable **decision-support surrogate** for outcome likelihood.\n\n"
+            "**Typical OR analogues:** queueing, inventory stages, project pipelines, disruption/rework dynamics."
+        )
+
+    with tabs[1]:
+        st.markdown(
+            "**Game theory framing:** multiple agents pursue conflicting goals.\n\n"
+            "- Each player is a strategic actor competing for the same objective (win).\n"
+            "- Captures model **direct adversarial interaction**.\n"
+            "- Comparing move options approximates choosing between **strategies** under uncertainty.\n\n"
+            "**How to demonstrate:** use **🧭 Guided Play** to compare Option A vs B for the same dice roll, "
+            "and narrate it like competitive decision-making (e.g., aggression vs safety)."
+        )
+
+    with tabs[2]:
+        st.markdown(
+            "**Optimization framing:** we want a good action given constraints.\n\n"
+            "- The constraints are the legal move options; the objective is to maximize a utility proxy (Winner Probability).\n"
+            "- **🧭 Guided Play** is a simple optimization interface: evaluate candidates and choose the best.\n"
+            "- In a real business setting, the same pattern becomes ranking priorities, allocating capacity, or selecting policies."
+        )
+
+    st.info(
+        "For live demos to non-technical audiences, use **🧭 Guided Play**: enter 2–4 legal move options and let the app "
+        "recommend the option with the highest predicted win probability."
+    )
+
 # ============================================================================
 # PAGE 2: DATASET & EDA
 # ============================================================================

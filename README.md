@@ -190,7 +190,8 @@ ludomaniac/
 │   ├── Ludo_EDA.ipynb           ← EDA analysis
 │   ├── Feature_engineering.ipynb ← ML pipeline & model
 │   └── model/
-│       └── production_ludo_predictor.pkl  ← Trained model
+│       ├── production_rf_predictor.pkl    ← Advanced Random Forest (notebook export)
+│       └── production_gb_predictor.pkl    ← Calibrated Gradient Boosting (production)
 ├── data file/
 │   ├── Raw_Data/
 │   │   └── ludo_dataset.csv

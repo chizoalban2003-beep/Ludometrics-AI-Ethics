@@ -170,7 +170,7 @@ class ProductionLudoPredictor:
     """
 
     base_pipeline: Any
-    platt_calibrator: Any
+    platt_calibrator: Optional[Any]
     decision_threshold: float
     feature_columns: list[str]
     artifact: dict[str, Any]
@@ -179,6 +179,12 @@ class ProductionLudoPredictor:
         """Return calibrated class probabilities [P(0), P(1)]."""
         if X is None or len(X) == 0:
             raise ValueError("Empty input")
+
+        # Some artifacts (e.g. advanced RF) are shipped without a calibrator.
+        if self.platt_calibrator is None:
+            if hasattr(self.base_pipeline, "predict_proba"):
+                return np.asarray(self.base_pipeline.predict_proba(X))
+            raise TypeError("Uncalibrated model has no predict_proba")
 
         # Platt calibrator expects a 2D array of decision scores.
         if hasattr(self.base_pipeline, "decision_function"):
@@ -467,7 +473,10 @@ def _load_model_artifact():
     Streamlit hot-reloads can redefine classes, making `isinstance()` checks fail
     if the cached value is an old instance.
     """
-    model_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    # Prefer renamed artifact; fall back to legacy filename if present.
+    preferred = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
+    legacy = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    model_path = preferred if preferred.exists() else legacy
     if not model_path.exists():
         return None
     return joblib.load(model_path)
@@ -498,6 +507,24 @@ def _wrap_production_artifact(obj: Any) -> Any:
             feature_columns=feature_columns,
             artifact=obj,
         )
+
+    # Alternate artifact format: the dict stores a fitted sklearn estimator directly under "model".
+    # This is how the advanced RF export is stored in this repo.
+    if isinstance(obj, dict) and obj.get("model") is not None and hasattr(obj.get("model"), "predict_proba"):
+        model_obj = obj.get("model")
+        feature_columns = list(obj.get("feature_columns", []))
+        if not feature_columns:
+            raise ValueError("Production artifact missing feature_columns")
+        decision_threshold = obj.get("decision_threshold")
+        if decision_threshold is None:
+            decision_threshold = obj.get("threshold", 0.5)
+        return ProductionLudoPredictor(
+            base_pipeline=model_obj,
+            platt_calibrator=None,
+            decision_threshold=float(decision_threshold),
+            feature_columns=feature_columns,
+            artifact=obj,
+        )
     return obj
 
 
@@ -505,21 +532,24 @@ def load_model():
     """Load the primary production model (wrapped).
 
     Preference order:
-    1) `jupyter_notebooks/model/production_rf_predictor.pkl` (tuned RF; primary)
-    2) `jupyter_notebooks/model/production_ludo_predictor.pkl` (legacy tuned GB; fallback)
+    1) `jupyter_notebooks/model/production_rf_predictor.pkl` (advanced RF; notebook export)
+    2) `jupyter_notebooks/model/production_gb_predictor.pkl` (tuned GB + Platt; fallback)
 
     Returns a fresh `ProductionLudoPredictor` wrapper each run.
     """
     rf_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
-    gb_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    gb_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
+    gb_legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    if not gb_path.exists() and gb_legacy_path.exists():
+        gb_path = gb_legacy_path
     primary_path = rf_path if rf_path.exists() else gb_path
 
     obj = _load_model_artifact_from_path(str(primary_path))
     if obj is None:
         st.error(
             "No production model artifact found. Expected one of: "
-            "jupyter_notebooks/model/production_rf_predictor.pkl (preferred) or "
-            "jupyter_notebooks/model/production_ludo_predictor.pkl (fallback)."
+            "jupyter_notebooks/model/production_rf_predictor.pkl (advanced RF) or "
+            "jupyter_notebooks/model/production_gb_predictor.pkl (GB fallback)."
         )
         return None
 
@@ -1338,8 +1368,8 @@ elif page == "🎯 Model Prediction":
         if not isinstance(model, ProductionLudoPredictor):
             st.error(
                 "Loaded model is not the expected production predictor wrapper. "
-                "Expected a production artifact at jupyter_notebooks/model/production_rf_predictor.pkl (preferred) "
-                "or jupyter_notebooks/model/production_ludo_predictor.pkl (fallback)."
+                "Expected a production artifact at jupyter_notebooks/model/production_rf_predictor.pkl (advanced RF) "
+                "or jupyter_notebooks/model/production_gb_predictor.pkl (GB fallback)."
             )
             st.stop()
 
@@ -1349,37 +1379,49 @@ elif page == "🎯 Model Prediction":
 
         st.markdown("---")
         rf_prod_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
-        gb_prod_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+        gb_prod_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
+        gb_legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+        if not gb_prod_path.exists() and gb_legacy_path.exists():
+            gb_prod_path = gb_legacy_path
 
         prod_rf = load_production_model_from_path(rf_prod_path) if rf_prod_path.exists() else None
         prod_gb = load_production_model_from_path(gb_prod_path) if gb_prod_path.exists() else None
 
         options: list[str] = []
         if isinstance(prod_rf, ProductionLudoPredictor):
-            options.append("Production RF (Primary)")
+            options.append("Advanced RF (Feature Engineering Notebook)")
         if isinstance(prod_gb, ProductionLudoPredictor):
-            options.append("Production GB (Fallback)")
+            options.append("Gradient Boosting (Production GB)")
         options.append("Experimental RF (Train In-App)")
 
-        default_choice = "Production RF (Primary)" if "Production RF (Primary)" in options else options[0]
+        default_choice = (
+            "Advanced RF (Feature Engineering Notebook)"
+            if "Advanced RF (Feature Engineering Notebook)" in options
+            else options[0]
+        )
         model_choice = st.selectbox(
             "Choose model",
             options,
             index=options.index(default_choice),
             help=(
-                "Production RF is the primary estimator when the saved RF artifact exists. "
-                "Production GB is the legacy fallback. Experimental RF trains from the current dataset (cached)."
+                "Advanced RF is loaded from the notebook export artifact. "
+                "Gradient Boosting is the calibrated GB fallback. Experimental RF trains from the current dataset (cached)."
             ),
         )
 
-        if model_choice == "Production RF (Primary)":
+        if model_choice == "Advanced RF (Feature Engineering Notebook)":
             if not isinstance(prod_rf, ProductionLudoPredictor):
-                st.error("Saved RF artifact not found. Expected at jupyter_notebooks/model/production_rf_predictor.pkl")
+                st.error(
+                    "Saved RF artifact not found. Expected at jupyter_notebooks/model/production_rf_predictor.pkl"
+                )
                 st.stop()
             active_model = prod_rf
-        elif model_choice == "Production GB (Fallback)":
+        elif model_choice == "Gradient Boosting (Production GB)":
             if not isinstance(prod_gb, ProductionLudoPredictor):
-                st.error("Saved GB artifact not found. Expected at jupyter_notebooks/model/production_ludo_predictor.pkl")
+                st.error(
+                    "Saved GB artifact not found. Expected at jupyter_notebooks/model/production_gb_predictor.pkl "
+                    "(or legacy jupyter_notebooks/model/production_ludo_predictor.pkl)"
+                )
                 st.stop()
             active_model = prod_gb
         else:
@@ -1673,7 +1715,10 @@ elif page == "📈 Model Performance":
     st.title("📈 Model Performance Metrics")
 
     rf_prod_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
-    gb_prod_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    gb_prod_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
+    gb_legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    if not gb_prod_path.exists() and gb_legacy_path.exists():
+        gb_prod_path = gb_legacy_path
 
     prod_rf = load_production_model_from_path(rf_prod_path) if rf_prod_path.exists() else None
     prod_gb = load_production_model_from_path(gb_prod_path) if gb_prod_path.exists() else None
@@ -1687,7 +1732,7 @@ elif page == "📈 Model Performance":
     if not options:
         st.error(
             "No production model artifacts found. Expected at least one of: "
-            "jupyter_notebooks/model/production_rf_predictor.pkl or jupyter_notebooks/model/production_ludo_predictor.pkl"
+            "jupyter_notebooks/model/production_rf_predictor.pkl or jupyter_notebooks/model/production_gb_predictor.pkl"
         )
         st.stop()
 

@@ -1840,7 +1840,7 @@ elif page == "🧭 Guided Play":
     st.subheader("Choose how to provide moves")
     mode = st.radio(
         "Guided Play mode",
-        ["Scenario (from token positions)", "Manual options"],
+        ["Scenario (from token positions)", "Business scenario (resource allocation)", "Manual options"],
         help="Scenario mode auto-generates legal moves from token positions. Manual options lets you type options A/B/C/D yourself.",
     )
 
@@ -1859,7 +1859,8 @@ elif page == "🧭 Guided Play":
             index=player_options.index("Red") if "Red" in player_options else 0,
         )
         turn = st.number_input("Turn", min_value=0, value=1, step=1)
-        dice_roll = st.number_input("Dice_Roll", min_value=0, max_value=6, value=1, step=1)
+        dice_roll_label = "Dice_Roll" if mode != "Business scenario (resource allocation)" else "Capacity units (1–6)"
+        dice_roll = st.number_input(dice_roll_label, min_value=0, max_value=6, value=1, step=1)
     with common_right:
         finish_pos = st.number_input(
             "Finish position",
@@ -1966,6 +1967,98 @@ elif page == "🧭 Guided Play":
                 )
 
             st.dataframe(pd.DataFrame(options_payload), use_container_width=True, hide_index=True)
+
+    elif mode == "Business scenario (resource allocation)":
+        st.subheader("Step 2 — Business scenario inputs")
+        st.markdown(
+            "This is an **analogy mode**: we label the same underlying variables in business language so you can "
+            "demonstrate OR/game-theory/optimization-style decision making."
+        )
+        st.caption(
+            "Mapping used here: capacity units → Dice_Roll, work item progress → Position_Before/After, disruptions → Captured_Opponent."
+        )
+
+        st.markdown("Enter the progress of 4 work items (0 = not started, 57 = completed):")
+        wi_cols = st.columns(4)
+        work_progress: list[float] = []
+        for i in range(4):
+            with wi_cols[i]:
+                work_progress.append(
+                    float(
+                        st.number_input(
+                            f"Work item {i+1} progress",
+                            min_value=0.0,
+                            value=0.0,
+                            step=1.0,
+                            key=f"gp_wip_{i+1}",
+                        )
+                    )
+                )
+
+        include_competitor = st.checkbox(
+            "Include competitor/disruption positions (optional)",
+            value=False,
+            help="If enabled, the app marks a disruption when your chosen allocation lands on a competitor position (analogy for resets/rework).",
+        )
+        competitor_positions: list[float] = []
+        if include_competitor:
+            comp_cols = st.columns(4)
+            for j in range(4):
+                with comp_cols[j]:
+                    competitor_positions.append(
+                        float(
+                            st.number_input(
+                                f"Competitor marker {j+1}",
+                                min_value=0.0,
+                                value=0.0,
+                                step=1.0,
+                                key=f"gp_comp_{j+1}",
+                            )
+                        )
+                    )
+
+        tokens_home, tokens_active, tokens_finished = _token_state_counts_from_positions(work_progress, int(finish_pos))
+        st.write(
+            {
+                "Backlog (Tokens_Home)": int(tokens_home),
+                "In progress (Tokens_Active)": int(tokens_active),
+                "Completed (Tokens_Finished)": int(tokens_finished),
+            }
+        )
+
+        st.subheader("Step 3 — Candidate allocations (generated)")
+        generated = _legal_moves_from_positions(work_progress, int(dice_roll), int(finish_pos))
+        if not generated:
+            st.warning("No feasible allocations detected for this capacity under the simplified rules.")
+        else:
+            option_letters = [chr(ord("A") + i) for i in range(len(generated))]
+            for letter, move in zip(option_letters, generated):
+                after = float(move["Position_After"])
+                disruption = 0
+                if include_competitor and competitor_positions:
+                    if 1.0 <= after <= 56.0 and any(float(p) == after for p in competitor_positions):
+                        disruption = 1
+
+                options_payload.append(
+                    {
+                        "option": letter,
+                        "Token_Moved": int(move["Token_Moved"]),
+                        "Position_Before": float(move["Position_Before"]),
+                        "Position_After": float(move["Position_After"]),
+                        "Captured_Opponent": int(disruption),
+                    }
+                )
+
+            df_opts = pd.DataFrame(options_payload)
+            df_opts = df_opts.rename(
+                columns={
+                    "Token_Moved": "Work item",
+                    "Position_Before": "Progress before",
+                    "Position_After": "Progress after",
+                    "Captured_Opponent": "Disruption (0/1)",
+                }
+            )
+            st.dataframe(df_opts, use_container_width=True, hide_index=True)
 
     else:
         st.subheader("Step 2 — Enter your move options")
@@ -2076,9 +2169,19 @@ elif page == "🧭 Guided Play":
             best = results_df.iloc[0]
             st.markdown("---")
             st.subheader("Recommendation")
-            st.success(
-                f"Recommended move: **Option {best['Option']}** (Winner Probability: {best['Winner Probability']:.1%})"
-            )
+            if mode == "Business scenario (resource allocation)":
+                st.success(
+                    f"Recommended allocation: **Option {best['Option']}** → work item {int(best['Token_Moved'])} "
+                    f"(Success Probability: {best['Winner Probability']:.1%})"
+                )
+                st.caption(
+                    "Interpretation: treat this as a decision-support score for choosing where to allocate limited capacity, "
+                    "not a literal business KPI."
+                )
+            else:
+                st.success(
+                    f"Recommended move: **Option {best['Option']}** (Winner Probability: {best['Winner Probability']:.1%})"
+                )
             st.caption(
                 "Tip for demos: if probabilities are close, tell the audience the moves are roughly equivalent "
                 "and choose the move that is simpler to explain."

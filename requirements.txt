@@ -4,7 +4,6 @@ matplotlib==3.9.4
 seaborn==0.13.2
 ydata-profiling==4.12.0 # can be removed from requirements before deployment
 plotly==5.17.0
-ppscore==1.1.0 # can be removed from requirements before deployment
 streamlit==1.55.0
 feature-engine==1.9.4
 imbalanced-learn==0.11.0

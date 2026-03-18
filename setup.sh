@@ -8,5 +8,6 @@ mkdir -p ~/.streamlit/
 cat > ~/.streamlit/config.toml <<EOF
 [server]
 headless = true
+address = "0.0.0.0"
 port = $PORT
 EOF

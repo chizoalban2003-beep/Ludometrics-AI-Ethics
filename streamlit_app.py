@@ -609,6 +609,27 @@ def _render_guided_play_or_game_theory_optimization(audience_level: str) -> None
             st.latex(r"\text{Choose } a^* = \arg\max_{a \in \mathcal{A}} \; \hat{P}(\text{win} \mid \text{state}, a)")
 
 
+def _render_guided_play_60s_demo(audience_level: str) -> None:
+    audience_norm = str(audience_level or "").strip().lower()
+    expanded = audience_norm.startswith("non")
+    with st.expander("How to demo this in ~60 seconds", expanded=expanded):
+        if audience_norm.startswith("non"):
+            st.markdown(
+                "- Choose **Business scenario (resource allocation)**.\n"
+                "- Click a **Preset** (OR / Game Theory / Optimization) to load an example.\n"
+                "- Click **Compare moves** and read the recommended option + probability.\n"
+                "- Say: *We’re using the model like a calculator to compare options, not to guarantee the future.*"
+            )
+            return
+
+        st.markdown(
+            "- Pick a mode (Scenario / Business / Manual) and enter a single turn (state + dice/capacity).\n"
+            "- Generate or enter 2–4 feasible options.\n"
+            "- Click **Compare moves** → the app ranks options by $\\hat{P}(\\text{win}\\mid\\text{state}, a)$.\n"
+            "- If two options are close, treat them as near-ties and choose the simpler policy/story."
+        )
+
+
 def _choose_active_model_ui(
     base_model: "ProductionLudoPredictor",
     df_ref: pd.DataFrame,
@@ -1833,6 +1854,7 @@ elif page == "🧭 Guided Play":
 
     _render_guided_play_instructions()
     _render_guided_play_or_game_theory_optimization(audience)
+    _render_guided_play_60s_demo(audience)
     st.markdown("---")
 
     active_model = _choose_active_model_ui(model, df)
@@ -1858,9 +1880,9 @@ elif page == "🧭 Guided Play":
             player_options,
             index=player_options.index("Red") if "Red" in player_options else 0,
         )
-        turn = st.number_input("Turn", min_value=0, value=1, step=1)
+        turn = st.number_input("Turn", min_value=0, value=1, step=1, key="gp_turn")
         dice_roll_label = "Dice_Roll" if mode != "Business scenario (resource allocation)" else "Capacity units (1–6)"
-        dice_roll = st.number_input(dice_roll_label, min_value=0, max_value=6, value=1, step=1)
+        dice_roll = st.number_input(dice_roll_label, min_value=0, max_value=6, value=1, step=1, key="gp_dice_roll")
     with common_right:
         finish_pos = st.number_input(
             "Finish position",
@@ -1869,6 +1891,7 @@ elif page == "🧭 Guided Play":
             value=57,
             step=1,
             help="Matches the dataset generator's finish position by default.",
+            key="gp_finish_pos",
         )
 
         if mode == "Manual options":
@@ -1978,6 +2001,55 @@ elif page == "🧭 Guided Play":
             "Mapping used here: capacity units → Dice_Roll, work item progress → Position_Before/After, disruptions → Captured_Opponent."
         )
 
+        st.markdown("#### Quick presets")
+        presets: dict[str, dict[str, Any]] = {
+            "OR — Maximize throughput": {
+                "turn": 10,
+                "dice_roll": 4,
+                "finish_pos": 57,
+                "work_progress": [0.0, 12.0, 30.0, 44.0],
+                "include_competitor": False,
+                "competitor_positions": [0.0, 0.0, 0.0, 0.0],
+            },
+            "Game Theory — Block vs sprint": {
+                "turn": 14,
+                "dice_roll": 2,
+                "finish_pos": 57,
+                "work_progress": [10.0, 20.0, 52.0, 0.0],
+                "include_competitor": True,
+                "competitor_positions": [12.0, 54.0, 0.0, 0.0],
+            },
+            "Optimization — Finish vs start": {
+                "turn": 18,
+                "dice_roll": 2,
+                "finish_pos": 57,
+                "work_progress": [55.0, 0.0, 27.0, 33.0],
+                "include_competitor": False,
+                "competitor_positions": [0.0, 0.0, 0.0, 0.0],
+            },
+        }
+        preset_left, preset_right = st.columns([2, 1])
+        with preset_left:
+            preset_name = st.selectbox(
+                "Load a preset example",
+                list(presets.keys()),
+                help="Fills in capacity + work progress (and optional competitor markers) with a ready-to-demo scenario.",
+            )
+        with preset_right:
+            if st.button("Load preset", use_container_width=True):
+                preset = presets.get(preset_name, {})
+                st.session_state["gp_turn"] = int(preset.get("turn", st.session_state.get("gp_turn", 1)))
+                st.session_state["gp_dice_roll"] = int(preset.get("dice_roll", st.session_state.get("gp_dice_roll", 1)))
+                st.session_state["gp_finish_pos"] = int(preset.get("finish_pos", st.session_state.get("gp_finish_pos", 57)))
+                work_vals = list(preset.get("work_progress", [0.0, 0.0, 0.0, 0.0]))
+                for i in range(4):
+                    st.session_state[f"gp_wip_{i+1}"] = float(work_vals[i]) if i < len(work_vals) else 0.0
+                st.session_state["gp_include_competitor"] = bool(preset.get("include_competitor", False))
+                comp_vals = list(preset.get("competitor_positions", [0.0, 0.0, 0.0, 0.0]))
+                for j in range(4):
+                    st.session_state[f"gp_comp_{j+1}"] = float(comp_vals[j]) if j < len(comp_vals) else 0.0
+                st.rerun()
+
         st.markdown("Enter the progress of 4 work items (0 = not started, 57 = completed):")
         wi_cols = st.columns(4)
         work_progress: list[float] = []
@@ -1999,6 +2071,7 @@ elif page == "🧭 Guided Play":
             "Include competitor/disruption positions (optional)",
             value=False,
             help="If enabled, the app marks a disruption when your chosen allocation lands on a competitor position (analogy for resets/rework).",
+            key="gp_include_competitor",
         )
         competitor_positions: list[float] = []
         if include_competitor:

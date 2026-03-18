@@ -9,6 +9,7 @@ import numpy as np
 import joblib
 import plotly.express as px
 import plotly.graph_objects as go
+import os
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -2266,7 +2267,12 @@ st.caption(
 
 col_a, col_b, col_c = st.columns(3)
 with col_a:
-    st.link_button("GitHub Repository (may require access)", REPO_URL)
+    show_github = os.getenv("PUBLIC_REPO", "").strip().lower() in {"1", "true", "yes", "y"}
+    show_github = show_github or (os.getenv("LUDOMANIAC_SHOW_GITHUB", "").strip().lower() in {"1", "true", "yes", "y"})
+    if show_github:
+        st.link_button("GitHub Repository", REPO_URL)
+    else:
+        st.caption("GitHub link hidden (private deployment)")
     _download_button_for_file("Download README", "README.md", "text/markdown", "README.md")
 
 with col_b:

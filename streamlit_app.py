@@ -1908,6 +1908,11 @@ elif page == "🧭 Guided Play":
             tokens_finished = 0
 
     options_payload: list[dict[str, Any]] = []
+    # Initialized for export/download convenience across modes.
+    my_positions: list[float] = []
+    opponent_positions: list[float] = []
+    work_progress: list[float] = []
+    competitor_positions: list[float] = []
 
     if mode == "Scenario (from token positions)":
         st.subheader("Step 2 — Describe the scenario")
@@ -1915,6 +1920,118 @@ elif page == "🧭 Guided Play":
             "Enter the **current positions of your 4 tokens**. Use `0` for home. "
             "(This app follows the simplified simulation rules used to generate the dataset.)"
         )
+
+        st.markdown("#### Quick presets")
+        scenario_presets: dict[str, dict[str, Any]] = {
+            "Entry vs advance (roll 6)": {
+                "turn": 6,
+                "dice_roll": 6,
+                "finish_pos": 57,
+                "my_positions": [0.0, 0.0, 10.0, 20.0],
+                "include_opponents": False,
+                "opponent_positions": [0.0, 0.0, 0.0, 0.0],
+            },
+            "Capture opportunity": {
+                "turn": 9,
+                "dice_roll": 3,
+                "finish_pos": 57,
+                "my_positions": [17.0, 0.0, 25.0, 40.0],
+                "include_opponents": True,
+                "opponent_positions": [20.0, 0.0, 0.0, 0.0],
+            },
+            "Bounce-back near finish": {
+                "turn": 22,
+                "dice_roll": 4,
+                "finish_pos": 57,
+                "my_positions": [56.0, 0.0, 30.0, 0.0],
+                "include_opponents": False,
+                "opponent_positions": [0.0, 0.0, 0.0, 0.0],
+            },
+        }
+        preset_left, preset_mid, preset_right = st.columns([2, 1, 1])
+        with preset_left:
+            scenario_preset_name = st.selectbox(
+                "Load a preset example",
+                list(scenario_presets.keys()),
+                help="Fills in turn + dice roll + token positions (and optional opponent positions) with a ready-to-demo scenario.",
+                key="gp_scenario_preset",
+            )
+        with preset_mid:
+            if st.button("Load preset", use_container_width=True, key="gp_scenario_load"):
+                preset = scenario_presets.get(scenario_preset_name, {})
+                st.session_state["gp_turn"] = int(preset.get("turn", st.session_state.get("gp_turn", 1)))
+                st.session_state["gp_dice_roll"] = int(preset.get("dice_roll", st.session_state.get("gp_dice_roll", 1)))
+                st.session_state["gp_finish_pos"] = int(preset.get("finish_pos", st.session_state.get("gp_finish_pos", 57)))
+                my_vals = list(preset.get("my_positions", [0.0, 0.0, 0.0, 0.0]))
+                for i in range(4):
+                    st.session_state[f"gp_mypos_{i+1}"] = float(my_vals[i]) if i < len(my_vals) else 0.0
+                st.session_state["gp_include_opponents"] = bool(preset.get("include_opponents", False))
+                opp_vals = list(preset.get("opponent_positions", [0.0, 0.0, 0.0, 0.0]))
+                for j in range(4):
+                    st.session_state[f"gp_opppos_{j+1}"] = float(opp_vals[j]) if j < len(opp_vals) else 0.0
+                st.rerun()
+        with preset_right:
+            if st.button("Random preset", use_container_width=True, key="gp_scenario_random"):
+                rng = np.random.default_rng()
+                finish = int(st.session_state.get("gp_finish_pos", 57))
+
+                chosen_positions: list[float] = []
+                chosen_roll = 1
+                chosen_turn = 1
+                for _ in range(60):
+                    chosen_turn = int(rng.integers(1, 31))
+                    chosen_roll = int(rng.integers(1, 7))
+
+                    positions: list[float] = []
+                    for _k in range(4):
+                        bucket = float(rng.random())
+                        if bucket < 0.35:
+                            positions.append(0.0)
+                        elif bucket < 0.45:
+                            positions.append(float(finish))
+                        else:
+                            if finish <= 2:
+                                positions.append(1.0)
+                            else:
+                                positions.append(float(rng.integers(1, min(57, finish))))
+
+                    if _legal_moves_from_positions(positions, chosen_roll, finish):
+                        chosen_positions = positions
+                        break
+
+                if not chosen_positions:
+                    chosen_positions = [0.0, 0.0, 1.0, 10.0]
+                    chosen_roll = 1
+                    chosen_turn = 1
+
+                st.session_state["gp_turn"] = int(chosen_turn)
+                st.session_state["gp_dice_roll"] = int(chosen_roll)
+                st.session_state["gp_finish_pos"] = int(finish)
+                for i in range(4):
+                    st.session_state[f"gp_mypos_{i+1}"] = float(chosen_positions[i])
+
+                # Sometimes generate a capture demo by placing an opponent on a reachable landing square.
+                demo_capture = False
+                try:
+                    moves = _legal_moves_from_positions(chosen_positions, int(chosen_roll), int(finish))
+                    after_candidates = [
+                        float(m.get("Position_After", 0.0))
+                        for m in moves
+                        if 1.0 <= float(m.get("Position_After", 0.0)) <= 56.0
+                    ]
+                    if after_candidates and float(rng.random()) < 0.60:
+                        demo_capture = True
+                        target_after = float(rng.choice(np.asarray(after_candidates)))
+                    else:
+                        target_after = 0.0
+                except Exception:
+                    target_after = 0.0
+
+                st.session_state["gp_include_opponents"] = bool(demo_capture)
+                st.session_state["gp_opppos_1"] = float(target_after) if demo_capture else 0.0
+                for j in range(2, 5):
+                    st.session_state[f"gp_opppos_{j}"] = 0.0
+                st.rerun()
 
         pos_cols = st.columns(4)
         my_positions: list[float] = []
@@ -1936,6 +2053,7 @@ elif page == "🧭 Guided Play":
             "Include opponent token positions (for capture detection)",
             value=False,
             help="If enabled, the app can set Captured_Opponent=1 when your move lands on an opponent token.",
+            key="gp_include_opponents",
         )
 
         opponent_positions: list[float] = []
@@ -2028,14 +2146,14 @@ elif page == "🧭 Guided Play":
                 "competitor_positions": [0.0, 0.0, 0.0, 0.0],
             },
         }
-        preset_left, preset_right = st.columns([2, 1])
+        preset_left, preset_mid, preset_right = st.columns([2, 1, 1])
         with preset_left:
             preset_name = st.selectbox(
                 "Load a preset example",
                 list(presets.keys()),
                 help="Fills in capacity + work progress (and optional competitor markers) with a ready-to-demo scenario.",
             )
-        with preset_right:
+        with preset_mid:
             if st.button("Load preset", use_container_width=True):
                 preset = presets.get(preset_name, {})
                 st.session_state["gp_turn"] = int(preset.get("turn", st.session_state.get("gp_turn", 1)))
@@ -2048,6 +2166,68 @@ elif page == "🧭 Guided Play":
                 comp_vals = list(preset.get("competitor_positions", [0.0, 0.0, 0.0, 0.0]))
                 for j in range(4):
                     st.session_state[f"gp_comp_{j+1}"] = float(comp_vals[j]) if j < len(comp_vals) else 0.0
+                st.rerun()
+        with preset_right:
+            if st.button("Random preset", use_container_width=True, key="gp_business_random"):
+                rng = np.random.default_rng()
+                finish = int(st.session_state.get("gp_finish_pos", 57))
+
+                chosen_progress: list[float] = []
+                chosen_capacity = 1
+                chosen_turn = 1
+                for _ in range(60):
+                    chosen_turn = int(rng.integers(1, 31))
+                    chosen_capacity = int(rng.integers(1, 7))
+
+                    progress: list[float] = []
+                    for _k in range(4):
+                        bucket = float(rng.random())
+                        if bucket < 0.30:
+                            progress.append(0.0)
+                        elif bucket < 0.40:
+                            progress.append(float(finish))
+                        else:
+                            if finish <= 2:
+                                progress.append(1.0)
+                            else:
+                                progress.append(float(rng.integers(1, min(57, finish))))
+
+                    if _legal_moves_from_positions(progress, chosen_capacity, finish):
+                        chosen_progress = progress
+                        break
+
+                if not chosen_progress:
+                    chosen_progress = [0.0, 0.0, 5.0, 20.0]
+                    chosen_capacity = 2
+                    chosen_turn = 1
+
+                st.session_state["gp_turn"] = int(chosen_turn)
+                st.session_state["gp_dice_roll"] = int(chosen_capacity)
+                st.session_state["gp_finish_pos"] = int(finish)
+                for i in range(4):
+                    st.session_state[f"gp_wip_{i+1}"] = float(chosen_progress[i])
+
+                # Sometimes generate a disruption demo by placing a competitor marker on a reachable landing square.
+                demo_disruption = False
+                try:
+                    moves = _legal_moves_from_positions(chosen_progress, int(chosen_capacity), int(finish))
+                    after_candidates = [
+                        float(m.get("Position_After", 0.0))
+                        for m in moves
+                        if 1.0 <= float(m.get("Position_After", 0.0)) <= 56.0
+                    ]
+                    if after_candidates and float(rng.random()) < 0.60:
+                        demo_disruption = True
+                        target_after = float(rng.choice(np.asarray(after_candidates)))
+                    else:
+                        target_after = 0.0
+                except Exception:
+                    target_after = 0.0
+
+                st.session_state["gp_include_competitor"] = bool(demo_disruption)
+                st.session_state["gp_comp_1"] = float(target_after) if demo_disruption else 0.0
+                for j in range(2, 5):
+                    st.session_state[f"gp_comp_{j}"] = 0.0
                 st.rerun()
 
         st.markdown("Enter the progress of 4 work items (0 = not started, 57 = completed):")
@@ -2265,6 +2445,168 @@ elif page == "🧭 Guided Play":
             view_df["Winner Probability"] = view_df["Winner Probability"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
             view_df["Non-Winner Probability"] = view_df["Non-Winner Probability"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
             st.dataframe(view_df, use_container_width=True, hide_index=True)
+
+            if mode == "Business scenario (resource allocation)":
+                st.subheader("Downloads")
+
+                export_df = results_df.copy()
+                export_df = export_df.rename(
+                    columns={
+                        "Winner Probability": "Success_Probability",
+                        "Non-Winner Probability": "NonSuccess_Probability",
+                        "Token_Moved": "Work_Item",
+                        "Position_Before": "Progress_Before",
+                        "Position_After": "Progress_After",
+                        "Captured_Opponent": "Disruption_Flag",
+                    }
+                )
+                export_df.insert(0, "Recommended", export_df["Option"].astype(str) == str(best["Option"]))
+                export_df.insert(0, "Capacity_Units", int(dice_roll))
+                export_df.insert(0, "Turn", int(turn))
+                export_df.insert(0, "Player", str(player))
+                export_df.insert(0, "Model_Variant", str(active_model.artifact.get("model_variant", "unknown")))
+                export_df.insert(0, "Threshold", float(active_model.decision_threshold))
+                export_df.insert(0, "Finish_Position", int(finish_pos))
+                export_df.insert(0, "Backlog_Tokens_Home", int(tokens_home))
+                export_df.insert(0, "InProgress_Tokens_Active", int(tokens_active))
+                export_df.insert(0, "Completed_Tokens_Finished", int(tokens_finished))
+
+                csv_bytes = export_df.to_csv(index=False).encode("utf-8")
+
+                # Strategy brief: recommended + conservative alternative + a short narrative.
+                best_no_disruption = None
+                try:
+                    nd = results_df[results_df["Captured_Opponent"].astype(int) == 0]
+                    if len(nd) > 0:
+                        best_no_disruption = nd.iloc[0]
+                except Exception:
+                    best_no_disruption = None
+
+                top_rows = results_df.head(3).copy()
+                top_lines = []
+                for _i, row in top_rows.iterrows():
+                    top_lines.append(
+                        f"- Option {row['Option']}: work item {int(row['Token_Moved'])}, "
+                        f"{float(row['Position_Before'])} → {float(row['Position_After'])}, "
+                        f"disruption={int(row['Captured_Opponent'])}, success={float(row['Winner Probability']):.1%}"
+                    )
+
+                strategy_lines = [
+                    "Business Scenario — Strategy Brief (auto-generated)",
+                    "",
+                    f"Model: {active_model.artifact.get('model_variant', 'unknown')} | threshold={active_model.decision_threshold:.2f}",
+                    f"Player: {player} | Turn: {int(turn)} | Capacity units: {int(dice_roll)} | Finish position: {int(finish_pos)}",
+                    f"State: backlog={int(tokens_home)}, in_progress={int(tokens_active)}, completed={int(tokens_finished)}",
+                    "",
+                    f"Recommended allocation: Option {best['Option']} → work item {int(best['Token_Moved'])} "
+                    f"(success={float(best['Winner Probability']):.1%}, disruption={int(best['Captured_Opponent'])})",
+                ]
+                if best_no_disruption is not None:
+                    strategy_lines += [
+                        "",
+                        "Conservative alternative (avoid disruption if possible):",
+                        f"- Option {best_no_disruption['Option']} → work item {int(best_no_disruption['Token_Moved'])} "
+                        f"(success={float(best_no_disruption['Winner Probability']):.1%}, disruption=0)",
+                    ]
+                strategy_lines += [
+                    "",
+                    "Top options:",
+                    *top_lines,
+                    "",
+                    "Notes:",
+                    "- These probabilities are model scores from simulated data; they are decision-support, not guarantees.",
+                    "- If the top two options are close, treat it as a near-tie and choose the simpler policy/story.",
+                ]
+                strategy_text = "\n".join(strategy_lines)
+
+                dl_left, dl_right = st.columns(2)
+                with dl_left:
+                    st.download_button(
+                        "⬇️ Download predictions (CSV)",
+                        data=csv_bytes,
+                        file_name="business_scenario_predictions.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                with dl_right:
+                    st.download_button(
+                        "⬇️ Download strategy brief (TXT)",
+                        data=strategy_text.encode("utf-8"),
+                        file_name="business_scenario_strategy_brief.txt",
+                        mime="text/plain",
+                        use_container_width=True,
+                    )
+            else:
+                st.subheader("Downloads")
+
+                export_df = results_df.copy()
+                export_df.insert(0, "Recommended", export_df["Option"].astype(str) == str(best["Option"]))
+                export_df.insert(0, "Dice_Roll", int(dice_roll))
+                export_df.insert(0, "Turn", int(turn))
+                export_df.insert(0, "Player", str(player))
+                export_df.insert(0, "Model_Variant", str(active_model.artifact.get("model_variant", "unknown")))
+                export_df.insert(0, "Threshold", float(active_model.decision_threshold))
+                export_df.insert(0, "Finish_Position", int(finish_pos))
+                export_df.insert(0, "Tokens_Home", int(tokens_home))
+                export_df.insert(0, "Tokens_Active", int(tokens_active))
+                export_df.insert(0, "Tokens_Finished", int(tokens_finished))
+
+                if mode == "Scenario (from token positions)" and my_positions:
+                    export_df.insert(0, "My_Token_Positions", "|".join(str(float(p)) for p in my_positions))
+                    export_df.insert(
+                        0,
+                        "Opponent_Token_Positions",
+                        "|".join(str(float(p)) for p in opponent_positions) if opponent_positions else "",
+                    )
+
+                csv_bytes = export_df.to_csv(index=False).encode("utf-8")
+
+                top_rows = results_df.head(3).copy()
+                top_lines = []
+                for _i, row in top_rows.iterrows():
+                    top_lines.append(
+                        f"- Option {row['Option']}: token {int(row['Token_Moved'])}, "
+                        f"{float(row['Position_Before'])} → {float(row['Position_After'])}, "
+                        f"capture={int(row['Captured_Opponent'])}, win={float(row['Winner Probability']):.1%}"
+                    )
+
+                strategy_lines = [
+                    "Guided Play — Strategy Brief (auto-generated)",
+                    "",
+                    f"Mode: {mode}",
+                    f"Model: {active_model.artifact.get('model_variant', 'unknown')} | threshold={active_model.decision_threshold:.2f}",
+                    f"Player: {player} | Turn: {int(turn)} | Dice roll: {int(dice_roll)} | Finish position: {int(finish_pos)}",
+                    f"State: home={int(tokens_home)}, active={int(tokens_active)}, finished={int(tokens_finished)}",
+                    "",
+                    f"Recommended move: Option {best['Option']} "
+                    f"(win={float(best['Winner Probability']):.1%}, capture={int(best['Captured_Opponent'])})",
+                    "",
+                    "Top options:",
+                    *top_lines,
+                    "",
+                    "Notes:",
+                    "- This is decision support from simulated data; it is not a guarantee.",
+                    "- If top probabilities are close, treat as a near-tie and pick the move you can explain clearly.",
+                ]
+                strategy_text = "\n".join(strategy_lines)
+
+                dl_left, dl_right = st.columns(2)
+                with dl_left:
+                    st.download_button(
+                        "⬇️ Download predictions (CSV)",
+                        data=csv_bytes,
+                        file_name="guided_play_predictions.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+                with dl_right:
+                    st.download_button(
+                        "⬇️ Download strategy brief (TXT)",
+                        data=strategy_text.encode("utf-8"),
+                        file_name="guided_play_strategy_brief.txt",
+                        mime="text/plain",
+                        use_container_width=True,
+                    )
 
             _show_model_inputs(X_model)
 

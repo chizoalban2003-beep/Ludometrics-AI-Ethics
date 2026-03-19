@@ -1433,82 +1433,101 @@ elif page == "📊 Dataset & EDA":
             else:
                 chart_type = st.selectbox("Chart type", ["Heatmap"], index=0)
 
-            if x_is_num and y_is_num:
-                add_trendline = st.checkbox("Add OLS trendline", value=False)
-                trend_arg = None
-                if add_trendline:
-                    try:
-                        import statsmodels.api as _sm  # noqa: F401
-                    except Exception:
-                        st.warning("OLS trendline requires `statsmodels`. Install it or uncheck the trendline option.")
-                        trend_arg = None
+            try:
+                if x_is_num and y_is_num:
+                    add_trendline = st.checkbox("Add OLS trendline", value=False)
+                    trend_arg = None
+                    if add_trendline:
+                        try:
+                            import statsmodels.api as _sm  # noqa: F401
+                        except Exception:
+                            st.warning(
+                                "OLS trendline requires `statsmodels`. Install it or uncheck the trendline option."
+                            )
+                            trend_arg = None
+                        else:
+                            trend_arg = "ols"
+
+                    if chart_type == "2D Density":
+                        # Plotly Express `density_heatmap` doesn't accept a `color=` argument.
+                        # Our shared `facet_args` may contain `color` when a Hue is selected;
+                        # drop it for density plots.
+                        density_facet_args = dict(facet_args)
+                        density_facet_args.pop("color", None)
+                        fig_bi = px.density_heatmap(
+                            df_plot,
+                            x=x_col,
+                            y=y_col,
+                            title=f"2D density: {y_col} vs {x_col}",
+                            **density_facet_args,
+                        )
+                        if "color" in facet_args:
+                            st.caption("Note: Hue is ignored for 2D density heatmaps.")
                     else:
-                        trend_arg = "ols"
-                if chart_type == "2D Density":
+                        fig_bi = px.scatter(
+                            df_plot,
+                            x=x_col,
+                            y=y_col,
+                            title=f"{y_col} vs {x_col}",
+                            trendline=trend_arg,
+                            **facet_args,
+                        )
+                elif x_is_num and not y_is_num:
+                    if chart_type == "Violin":
+                        fig_bi = px.violin(
+                            df_plot,
+                            x=y_col,
+                            y=x_col,
+                            box=True,
+                            points="outliers",
+                            title=f"{x_col} by {y_col}",
+                            **facet_args,
+                        )
+                    else:
+                        fig_bi = px.box(
+                            df_plot,
+                            x=y_col,
+                            y=x_col,
+                            points="outliers",
+                            title=f"{x_col} by {y_col}",
+                            **facet_args,
+                        )
+                elif (not x_is_num) and y_is_num:
+                    if chart_type == "Violin":
+                        fig_bi = px.violin(
+                            df_plot,
+                            x=x_col,
+                            y=y_col,
+                            box=True,
+                            points="outliers",
+                            title=f"{y_col} by {x_col}",
+                            **facet_args,
+                        )
+                    else:
+                        fig_bi = px.box(
+                            df_plot,
+                            x=x_col,
+                            y=y_col,
+                            points="outliers",
+                            title=f"{y_col} by {x_col}",
+                            **facet_args,
+                        )
+                else:
                     fig_bi = px.density_heatmap(
                         df_plot,
                         x=x_col,
                         y=y_col,
-                        title=f"2D density: {y_col} vs {x_col}",
-                        **facet_args,
+                        title=f"Counts: {y_col} vs {x_col}",
                     )
-                else:
-                    fig_bi = px.scatter(
-                        df_plot,
-                        x=x_col,
-                        y=y_col,
-                        title=f"{y_col} vs {x_col}",
-                        trendline=trend_arg,
-                        **facet_args,
-                    )
-            elif x_is_num and not y_is_num:
-                if chart_type == "Violin":
-                    fig_bi = px.violin(
-                        df_plot,
-                        x=y_col,
-                        y=x_col,
-                        box=True,
-                        points='outliers',
-                        title=f"{x_col} by {y_col}",
-                        **facet_args,
-                    )
-                else:
-                    fig_bi = px.box(
-                        df_plot,
-                        x=y_col,
-                        y=x_col,
-                        points='outliers',
-                        title=f"{x_col} by {y_col}",
-                        **facet_args,
-                    )
-            elif (not x_is_num) and y_is_num:
-                if chart_type == "Violin":
-                    fig_bi = px.violin(
-                        df_plot,
-                        x=x_col,
-                        y=y_col,
-                        box=True,
-                        points='outliers',
-                        title=f"{y_col} by {x_col}",
-                        **facet_args,
-                    )
-                else:
-                    fig_bi = px.box(
-                        df_plot,
-                        x=x_col,
-                        y=y_col,
-                        points='outliers',
-                        title=f"{y_col} by {x_col}",
-                        **facet_args,
-                    )
-            else:
-                fig_bi = px.density_heatmap(
-                    df_plot,
-                    x=x_col,
-                    y=y_col,
-                    title=f"Counts: {y_col} vs {x_col}",
+
+                st.plotly_chart(fig_bi, use_container_width=True)
+            except TypeError as exc:
+                st.error(
+                    "That chart couldn't be rendered with the current settings. "
+                    "Try switching chart type or disabling Hue/facets."
                 )
-            st.plotly_chart(fig_bi, use_container_width=True)
+                with st.expander("Technical details"):
+                    st.code(str(exc))
 
         st.markdown("---")
 

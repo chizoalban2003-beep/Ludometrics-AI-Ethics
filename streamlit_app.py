@@ -968,11 +968,12 @@ def _is_numeric(series: pd.Series) -> bool:
 
 
 def _is_categorical(series: pd.Series) -> bool:
+    dtype = series.dtype
     return (
-        pd.api.types.is_bool_dtype(series)
-        or pd.api.types.is_categorical_dtype(series)
-        or pd.api.types.is_object_dtype(series)
-        or pd.api.types.is_string_dtype(series)
+        pd.api.types.is_bool_dtype(dtype)
+        or pd.api.types.is_categorical_dtype(dtype)
+        or pd.api.types.is_object_dtype(dtype)
+        or pd.api.types.is_string_dtype(dtype)
     )
 
 

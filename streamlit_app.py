@@ -458,9 +458,9 @@ def _show_model_inputs(X_model: pd.DataFrame) -> None:
         st.caption(f"Shape: {X_model.shape[0]} row(s) × {X_model.shape[1]} column(s)")
         if len(X_model) == 1:
             # Transpose for readability: one feature per row
-            st.dataframe(X_model.T.rename(columns={X_model.index[0]: "value"}), use_container_width=True)
+            st.dataframe(X_model.T.rename(columns={X_model.index[0]: "value"}), width="stretch")
         else:
-            st.dataframe(X_model, use_container_width=True)
+            st.dataframe(X_model, width="stretch")
 
 
 def _bounce_position_after(position_before: float, dice_roll: int, finish_pos: int = 57) -> float:
@@ -1246,7 +1246,7 @@ if page == "🏠 Overview":
             {"Ludo concept": "Winner Probability", "Business analogue": "Risk score / success likelihood / expected utility proxy"},
             {"Ludo concept": "Decision threshold", "Business analogue": "Operational decision boundary (act vs wait)"},
         ]
-        st.dataframe(pd.DataFrame(mapping_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(mapping_rows), width="stretch", hide_index=True)
 
     tabs = st.tabs(["1) Operations Research", "2) Game Theory", "3) Optimization"])
 
@@ -1317,11 +1317,11 @@ elif page == "📊 Dataset & EDA":
         st.markdown("---")
 
         st.subheader("Sample Data")
-        st.dataframe(df.head(10), use_container_width=True)
+        st.dataframe(df.head(10), width="stretch")
 
         with st.expander("Column types"):
             types_df = pd.DataFrame({"column": df.columns, "dtype": [str(dt) for dt in df.dtypes]})
-            st.dataframe(types_df, use_container_width=True, hide_index=True)
+            st.dataframe(types_df, width="stretch", hide_index=True)
 
         st.markdown("---")
 
@@ -1409,7 +1409,7 @@ elif page == "📊 Dataset & EDA":
                     fig_uni = px.pie(counts, names=selected_uni, values="count", title=f"Share of {selected_uni}")
                 else:
                     fig_uni.update_layout(bargap=0.2)
-            st.plotly_chart(fig_uni, use_container_width=True)
+            st.plotly_chart(fig_uni, width="stretch")
 
         st.markdown("---")
 
@@ -1521,7 +1521,7 @@ elif page == "📊 Dataset & EDA":
                         title=f"Counts: {y_col} vs {x_col}",
                     )
 
-                st.plotly_chart(fig_bi, use_container_width=True)
+                st.plotly_chart(fig_bi, width="stretch")
             except TypeError as exc:
                 st.error(
                     "That chart couldn't be rendered with the current settings. "
@@ -1551,7 +1551,7 @@ elif page == "📊 Dataset & EDA":
                         title="Scatter matrix (sampled for performance)",
                     )
                     fig_matrix.update_traces(diagonal_visible=False)
-                    st.plotly_chart(fig_matrix, use_container_width=True)
+                    st.plotly_chart(fig_matrix, width="stretch")
                 except Exception as e:
                     st.error(f"Could not render scatter matrix: {e}")
         elif len(numeric_cols) > 0:
@@ -1569,7 +1569,7 @@ elif page == "📊 Dataset & EDA":
                     zmin=-1,
                     zmax=1,
                 )
-                st.plotly_chart(fig_heat, use_container_width=True)
+                st.plotly_chart(fig_heat, width="stretch")
 
         if target_col is not None and target_col in df.columns and numeric_cols:
             st.markdown("---")
@@ -1582,7 +1582,7 @@ elif page == "📊 Dataset & EDA":
                 title="Spearman Correlation with Is_Winner",
                 labels={'x': 'Correlation Coefficient', 'y': 'Feature'}
             )
-            st.plotly_chart(fig_corr, use_container_width=True)
+            st.plotly_chart(fig_corr, width="stretch")
     
     else:
         st.warning("Dataset not found. Ensure data file exists at `data file/Clean_Data/ludo_dataset_cleaned.csv`")
@@ -1709,7 +1709,7 @@ elif page == "🔧 Feature Engineering":
     }
     
     alias_df = pd.DataFrame(list(aliases.items()), columns=['Alias', 'Full Name'])
-    st.dataframe(alias_df, use_container_width=True, hide_index=True)
+    st.dataframe(alias_df, width="stretch", hide_index=True)
     
     st.markdown("---")
     
@@ -1843,7 +1843,7 @@ elif page == "🎯 Model Prediction":
                     sample_data = df[df['Is_Winner'] == 0].sample(1, random_state=42)
                 
                 st.write("Sample Data:")
-                st.dataframe(sample_data, use_container_width=True)
+                st.dataframe(sample_data, width="stretch")
                 
                 if st.button("🎲 Predict on Sample"):
                     try:
@@ -2155,7 +2155,7 @@ elif page == "🧭 Guided Play":
         with preset_mid:
             st.button(
                 "Load preset",
-                use_container_width=True,
+                width="stretch",
                 key="gp_scenario_load",
                 on_click=_gp_apply_scenario_preset,
                 args=(scenario_presets.get(scenario_preset_name, {}),),
@@ -2163,7 +2163,7 @@ elif page == "🧭 Guided Play":
         with preset_right:
             st.button(
                 "Random preset",
-                use_container_width=True,
+                width="stretch",
                 key="gp_scenario_random",
                 on_click=_gp_apply_random_scenario_preset,
             )
@@ -2242,7 +2242,7 @@ elif page == "🧭 Guided Play":
                     }
                 )
 
-            st.dataframe(pd.DataFrame(options_payload), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(options_payload), width="stretch", hide_index=True)
 
     elif mode == "Business scenario (resource allocation)":
         st.subheader("Step 2 — Business scenario inputs")
@@ -2291,7 +2291,7 @@ elif page == "🧭 Guided Play":
         with preset_mid:
             st.button(
                 "Load preset",
-                use_container_width=True,
+                width="stretch",
                 key="gp_business_load",
                 on_click=_gp_apply_business_preset,
                 args=(presets.get(preset_name, {}),),
@@ -2299,7 +2299,7 @@ elif page == "🧭 Guided Play":
         with preset_right:
             st.button(
                 "Random preset",
-                use_container_width=True,
+                width="stretch",
                 key="gp_business_random",
                 on_click=_gp_apply_random_business_preset,
             )
@@ -2385,7 +2385,7 @@ elif page == "🧭 Guided Play":
                     "Captured_Opponent": "Disruption (0/1)",
                 }
             )
-            st.dataframe(df_opts, use_container_width=True, hide_index=True)
+            st.dataframe(df_opts, width="stretch", hide_index=True)
 
     else:
         st.subheader("Step 2 — Enter your move options")
@@ -2518,7 +2518,7 @@ elif page == "🧭 Guided Play":
             view_df = results_df.copy()
             view_df["Winner Probability"] = view_df["Winner Probability"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
             view_df["Non-Winner Probability"] = view_df["Non-Winner Probability"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
-            st.dataframe(view_df, use_container_width=True, hide_index=True)
+            st.dataframe(view_df, width="stretch", hide_index=True)
 
             if mode == "Business scenario (resource allocation)":
                 st.subheader("Downloads")
@@ -2600,7 +2600,7 @@ elif page == "🧭 Guided Play":
                         data=csv_bytes,
                         file_name="business_scenario_predictions.csv",
                         mime="text/csv",
-                        use_container_width=True,
+                        width="stretch",
                     )
                 with dl_right:
                     st.download_button(
@@ -2608,7 +2608,7 @@ elif page == "🧭 Guided Play":
                         data=strategy_text.encode("utf-8"),
                         file_name="business_scenario_strategy_brief.txt",
                         mime="text/plain",
-                        use_container_width=True,
+                        width="stretch",
                     )
             else:
                 st.subheader("Downloads")
@@ -2671,7 +2671,7 @@ elif page == "🧭 Guided Play":
                         data=csv_bytes,
                         file_name="guided_play_predictions.csv",
                         mime="text/csv",
-                        use_container_width=True,
+                        width="stretch",
                     )
                 with dl_right:
                     st.download_button(
@@ -2679,7 +2679,7 @@ elif page == "🧭 Guided Play":
                         data=strategy_text.encode("utf-8"),
                         file_name="guided_play_strategy_brief.txt",
                         mime="text/plain",
-                        use_container_width=True,
+                        width="stretch",
                     )
 
             _show_model_inputs(X_model)
@@ -2723,7 +2723,7 @@ elif page == "🛠 Diagnostics":
         })
         st.write("Missing values (top 20 columns):")
         na_counts = df.isna().sum().sort_values(ascending=False)
-        st.dataframe(na_counts.head(20).rename("na_count"), use_container_width=True)
+        st.dataframe(na_counts.head(20).rename("na_count"), width="stretch")
 
     st.subheader("Model")
     if model is None:
@@ -2829,7 +2829,7 @@ elif page == "🛠 Diagnostics":
                 show_cols = [c for c in (["Game_ID", "Player"] + base_numeric + ["Is_Winner"]) if c in raw_row.columns]
                 if show_cols:
                     st.caption("Raw row values")
-                    st.dataframe(raw_row[show_cols], use_container_width=True)
+                    st.dataframe(raw_row[show_cols], width="stretch")
 
                 try:
                     raw_cols = ["Game_ID", "Player"] + base_numeric
@@ -2999,13 +2999,13 @@ elif page == "📈 Model Performance":
         yaxis_title="Actual Label",
         height=400
     )
-    st.plotly_chart(fig_cm, use_container_width=True)
+    st.plotly_chart(fig_cm, width="stretch")
 
     with st.expander("Classification report (precision/recall/F1)", expanded=True):
         report_dict = eval_out.get("classification_report", {})
         if isinstance(report_dict, dict):
             report_df = pd.DataFrame(report_dict).T
-            st.dataframe(report_df, use_container_width=True)
+            st.dataframe(report_df, width="stretch")
         else:
             st.info("Classification report not available")
     
@@ -3041,7 +3041,7 @@ elif page == "📈 Model Performance":
         height=500,
         hovermode='closest'
     )
-    st.plotly_chart(fig_roc, use_container_width=True)
+    st.plotly_chart(fig_roc, width="stretch")
     
     st.markdown("**ROC-AUC Interpretation:**")
     st.markdown(
@@ -3081,7 +3081,7 @@ elif page == "📈 Model Performance":
         title="Top 10 Most Important Features",
         labels={'x': 'Importance Score', 'y': 'Feature'}
     )
-    st.plotly_chart(fig_imp, use_container_width=True)
+    st.plotly_chart(fig_imp, width="stretch")
     
     st.markdown("**Key Insight:** Engineered features (with 'eng_' prefix) dominate top importances, validating the feature engineering approach.")
 
@@ -3105,7 +3105,7 @@ def _download_button_for_file(label: str, file_path: str, mime: str, file_name: 
         data=data,
         file_name=file_name or path.name,
         mime=mime,
-        use_container_width=True,
+        width="stretch",
     )
 
 

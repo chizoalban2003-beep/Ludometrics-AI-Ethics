@@ -15,6 +15,28 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 
+BASE_NUMERIC_FEATURES: list[str] = [
+    "Turn",
+    "Dice_Roll",
+    "Token_Moved",
+    "Position_Before",
+    "Position_After",
+    "Tokens_Home",
+    "Tokens_Active",
+    "Tokens_Finished",
+    "Captured_Opponent",
+]
+
+DATASET_CANDIDATE_PATHS: list[Path] = [
+    Path("data file/Clean_Data/ludo_dataset_cleaned.csv"),
+    Path("data file/Raw_Data/ludo_dataset_cleaned.csv"),
+]
+
+RF_ARTIFACT_PATH = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
+GB_ARTIFACT_PATH = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
+GB_LEGACY_ARTIFACT_PATH = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+
+
 @st.cache_resource
 def _train_experimental_random_forest_predictor(
     df_ref: pd.DataFrame,
@@ -44,17 +66,7 @@ def _train_experimental_random_forest_predictor(
     if "Is_Winner" not in df_ref.columns:
         raise ValueError("Dataset missing 'Is_Winner'; cannot train.")
 
-    base_numeric = [
-        "Turn",
-        "Dice_Roll",
-        "Token_Moved",
-        "Position_Before",
-        "Position_After",
-        "Tokens_Home",
-        "Tokens_Active",
-        "Tokens_Finished",
-        "Captured_Opponent",
-    ]
+    base_numeric = BASE_NUMERIC_FEATURES
 
     y_all = pd.to_numeric(df_ref["Is_Winner"], errors="coerce")
     mask = y_all.notna()
@@ -662,11 +674,8 @@ def _choose_active_model_ui(
     df_ref: pd.DataFrame,
 ) -> "ProductionLudoPredictor":
     """UI helper shared by Model Prediction and Guided Play pages."""
-    rf_prod_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
-    gb_prod_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
-    gb_legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
-    if not gb_prod_path.exists() and gb_legacy_path.exists():
-        gb_prod_path = gb_legacy_path
+    rf_prod_path = RF_ARTIFACT_PATH
+    gb_prod_path = _resolve_gb_artifact_path()
 
     prod_rf = load_production_model_from_path(rf_prod_path) if rf_prod_path.exists() else None
     prod_gb = load_production_model_from_path(gb_prod_path) if gb_prod_path.exists() else None
@@ -765,8 +774,8 @@ def _load_model_artifact():
     if the cached value is an old instance.
     """
     # Prefer renamed artifact; fall back to legacy filename if present.
-    preferred = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
-    legacy = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    preferred = GB_ARTIFACT_PATH
+    legacy = GB_LEGACY_ARTIFACT_PATH
     model_path = preferred if preferred.exists() else legacy
     if not model_path.exists():
         return None
@@ -828,11 +837,8 @@ def load_model():
 
     Returns a fresh `ProductionLudoPredictor` wrapper each run.
     """
-    rf_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
-    gb_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
-    gb_legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
-    if not gb_path.exists() and gb_legacy_path.exists():
-        gb_path = gb_legacy_path
+    rf_path = RF_ARTIFACT_PATH
+    gb_path = _resolve_gb_artifact_path()
     primary_path = rf_path if rf_path.exists() else gb_path
 
     obj = _load_model_artifact_from_path(str(primary_path))
@@ -904,14 +910,56 @@ def _export_predictor_artifact(predictor: ProductionLudoPredictor, export_path: 
 @st.cache_data
 def load_dataset():
     """Load the cleaned dataset for reference."""
-    data_paths = [
-        Path('data file/Clean_Data/ludo_dataset_cleaned.csv'),
-        Path('data file/Raw_Data/ludo_dataset_cleaned.csv'),
-    ]
-    for path in data_paths:
+    for path in DATASET_CANDIDATE_PATHS:
         if path.exists():
             return pd.read_csv(path)
     return None
+
+
+def _resolve_gb_artifact_path() -> Path:
+    """Return GB artifact path with backward-compatible legacy fallback."""
+    if GB_ARTIFACT_PATH.exists():
+        return GB_ARTIFACT_PATH
+    if GB_LEGACY_ARTIFACT_PATH.exists():
+        return GB_LEGACY_ARTIFACT_PATH
+    return GB_ARTIFACT_PATH
+
+
+def _get_player_options(df_ref: pd.DataFrame) -> list[str]:
+    """Return deterministic player options with sensible fallback values."""
+    options = sorted(df_ref["Player"].dropna().astype(str).unique().tolist()) if "Player" in df_ref.columns else ["Red"]
+    if not options:
+        options = ["Red", "Blue", "Green", "Yellow"]
+    return options
+
+
+def _require_production_context(
+    model_obj: Any,
+    df_obj: Optional[pd.DataFrame],
+    *,
+    detailed_model_error: bool = False,
+) -> tuple["ProductionLudoPredictor", pd.DataFrame]:
+    """Validate shared model/dataset prerequisites used by prediction pages."""
+    if model_obj is None:
+        st.error("Model could not be loaded. Please ensure the model artifact exists.")
+        st.stop()
+
+    if not isinstance(model_obj, ProductionLudoPredictor):
+        if detailed_model_error:
+            st.error(
+                "Loaded model is not the expected production predictor wrapper. "
+                "Expected a production artifact at jupyter_notebooks/model/production_rf_predictor.pkl (advanced RF) "
+                "or jupyter_notebooks/model/production_gb_predictor.pkl (GB fallback)."
+            )
+        else:
+            st.error("Loaded model is not the expected production predictor wrapper.")
+        st.stop()
+
+    if df_obj is None:
+        st.error("Dataset could not be loaded; inference feature engineering requires the reference dataset.")
+        st.stop()
+
+    return model_obj, df_obj
 
 
 def _safe_selectbox(
@@ -990,11 +1038,7 @@ def _plotly_facet_args(hue: Optional[str], facet_col: Optional[str], facet_row: 
 
 def _get_dataset_source_path() -> Optional[Path]:
     """Return the dataset path used by `load_dataset()` when present."""
-    candidates = [
-        Path("data file/Clean_Data/ludo_dataset_cleaned.csv"),
-        Path("data file/Raw_Data/ludo_dataset_cleaned.csv"),
-    ]
-    for candidate in candidates:
+    for candidate in DATASET_CANDIDATE_PATHS:
         if candidate.exists():
             return candidate
     return None
@@ -1068,17 +1112,7 @@ def _evaluate_production_model(
         df_eval = df_eval.sample(sample_n, random_state=int(random_state))
         y = df_eval["Is_Winner"].astype(int).to_numpy()
 
-    base_numeric = [
-        "Turn",
-        "Dice_Roll",
-        "Token_Moved",
-        "Position_Before",
-        "Position_After",
-        "Tokens_Home",
-        "Tokens_Active",
-        "Tokens_Finished",
-        "Captured_Opponent",
-    ]
+    base_numeric = BASE_NUMERIC_FEATURES
     raw_cols = [c for c in (["Game_ID", "Player"] + base_numeric) if c in df_eval.columns]
     X_raw = df_eval[raw_cols].copy()
     X_model = _prepare_model_matrix(X_raw, predictor)
@@ -1150,6 +1184,23 @@ if page == "🏠 Overview":
     ### Project Objective
     Predict which player will win a Ludo game using machine learning, based on gameplay features 
     engineered from statistical analysis of in-game patterns.
+
+    ### 🧭 Business Scenario Mapping
+
+    This app can also be interpreted as a teaching analogy for business decision support.
+
+    | Ludo Concept | Business Analogy |
+    |---|---|
+    | Player | Team / strategy option |
+    | Turn | Decision cycle |
+    | Dice_Roll | Available capacity (1–6 units) |
+    | Token_Moved | Work item selected |
+    | Position_Before / Position_After | Progress before/after allocation |
+    | Captured_Opponent | Competitive displacement / market gain |
+    | Win Probability | Estimated success likelihood of a decision |
+
+    > **Responsible-use note:** This mapping is educational and simplified.
+    > Model outputs are probabilistic guidance, not guarantees or causal proof.
     
     ---
     
@@ -1734,43 +1785,17 @@ elif page == "🔧 Feature Engineering":
 
 elif page == "🎯 Model Prediction":
     st.title("🎯 Model Prediction")
-    
-    if model is None:
-        st.error("Model could not be loaded. Please ensure the model artifact exists.")
-    else:
+    model, df = _require_production_context(model, df, detailed_model_error=True)
+    if model is not None:
         st.markdown("### Make a Prediction")
         st.markdown("Input current game features to predict the winner probability.")
-
-        if not isinstance(model, ProductionLudoPredictor):
-            st.error(
-                "Loaded model is not the expected production predictor wrapper. "
-                "Expected a production artifact at jupyter_notebooks/model/production_rf_predictor.pkl (advanced RF) "
-                "or jupyter_notebooks/model/production_gb_predictor.pkl (GB fallback)."
-            )
-            st.stop()
-
-        if df is None:
-            st.error("Dataset could not be loaded; inference feature engineering requires the reference dataset.")
-            st.stop()
 
         st.markdown("---")
         active_model = _choose_active_model_ui(model, df)
 
         # Raw input columns (the app's cleaned dataset schema)
-        base_numeric = [
-            "Turn",
-            "Dice_Roll",
-            "Token_Moved",
-            "Position_Before",
-            "Position_After",
-            "Tokens_Home",
-            "Tokens_Active",
-            "Tokens_Finished",
-            "Captured_Opponent",
-        ]
-        player_options = sorted(df["Player"].dropna().astype(str).unique().tolist()) if "Player" in df.columns else ["Red"]
-        if not player_options:
-            player_options = ["Red", "Blue", "Green", "Yellow"]
+        base_numeric = BASE_NUMERIC_FEATURES
+        player_options = _get_player_options(df)
         
         st.markdown("---")
         
@@ -1891,15 +1916,7 @@ elif page == "🧭 Guided Play":
         "and the app provides a clear probability-based recommendation."
     )
 
-    if model is None:
-        st.error("Model could not be loaded. Please ensure the model artifact exists.")
-        st.stop()
-    if not isinstance(model, ProductionLudoPredictor):
-        st.error("Loaded model is not the expected production predictor wrapper.")
-        st.stop()
-    if df is None:
-        st.error("Dataset could not be loaded; inference feature engineering requires the reference dataset.")
-        st.stop()
+    model, df = _require_production_context(model, df)
 
     _render_guided_play_instructions()
     _render_guided_play_or_game_theory_optimization(audience)
@@ -1917,11 +1934,7 @@ elif page == "🧭 Guided Play":
     )
 
     st.subheader("Step 1 — Enter shared turn information")
-    player_options = (
-        sorted(df["Player"].dropna().astype(str).unique().tolist()) if "Player" in df.columns else ["Red"]
-    )
-    if not player_options:
-        player_options = ["Red", "Blue", "Green", "Yellow"]
+    player_options = _get_player_options(df)
 
     common_left, common_right = st.columns(2)
     with common_left:
@@ -2744,9 +2757,9 @@ elif page == "🛠 Diagnostics":
             st.warning(f"Could not introspect model: {e}")
 
     st.subheader("Model Artifacts")
-    gb_export_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
-    rf_export_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
-    legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+    gb_export_path = GB_ARTIFACT_PATH
+    rf_export_path = RF_ARTIFACT_PATH
+    legacy_path = GB_LEGACY_ARTIFACT_PATH
     st.write(
         {
             "legacy production_ludo_predictor.pkl exists": legacy_path.exists(),
@@ -2788,17 +2801,7 @@ elif page == "🛠 Diagnostics":
         st.info("Inference preview is available only for the production predictor wrapper.")
     else:
         with st.expander("Preview a prediction on a dataset row", expanded=False):
-            base_numeric = [
-                "Turn",
-                "Dice_Roll",
-                "Token_Moved",
-                "Position_Before",
-                "Position_After",
-                "Tokens_Home",
-                "Tokens_Active",
-                "Tokens_Finished",
-                "Captured_Opponent",
-            ]
+            base_numeric = BASE_NUMERIC_FEATURES
 
             filter_mode = "Any"
             if "Is_Winner" in df.columns:
@@ -2856,11 +2859,8 @@ elif page == "🛠 Diagnostics":
 elif page == "📈 Model Performance":
     st.title("📈 Model Performance Metrics")
 
-    rf_prod_path = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
-    gb_prod_path = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
-    gb_legacy_path = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
-    if not gb_prod_path.exists() and gb_legacy_path.exists():
-        gb_prod_path = gb_legacy_path
+    rf_prod_path = RF_ARTIFACT_PATH
+    gb_prod_path = _resolve_gb_artifact_path()
 
     prod_rf = load_production_model_from_path(rf_prod_path) if rf_prod_path.exists() else None
     prod_gb = load_production_model_from_path(gb_prod_path) if gb_prod_path.exists() else None

@@ -658,7 +658,7 @@ def _render_ethics_and_limitations(audience_level: str) -> None:
 
         st.markdown(
             "**What the model is (and is not):**\n"
-            "- A supervised ML model that estimates $\\hat{P}(\\\"win\\\" \\mid \\text{state}, a)$ from the project dataset.\n"
+            "- A supervised ML model that estimates $\\hat{P}(\\text{win} \\mid \\text{state}, a)$ from the project dataset.\n"
             "- Not a proof of optimal play, not causal inference, and not a guarantee of outcomes.\n\n"
             "**Key ethics/roboethics considerations:**\n"
             "- **Automation bias:** users may over-trust the top-ranked option, especially when probabilities are close.\n"
@@ -2718,8 +2718,8 @@ elif page == "🛠 Diagnostics":
             try:
                 st.cache_data.clear()
                 st.cache_resource.clear()
-            except Exception:
-                pass
+            except Exception as e:
+                st.warning(f"Could not clear cache cleanly: {e}")
             st.rerun()
     with col_b:
         st.caption("Use this if model wrapping looks stale after code changes.")

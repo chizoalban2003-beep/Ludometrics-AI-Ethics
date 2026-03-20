@@ -10,6 +10,7 @@ import joblib
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+import logging
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -35,6 +36,8 @@ DATASET_CANDIDATE_PATHS: list[Path] = [
 RF_ARTIFACT_PATH = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
 GB_ARTIFACT_PATH = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
 GB_LEGACY_ARTIFACT_PATH = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+
+logger = logging.getLogger(__name__)
 
 
 @st.cache_resource
@@ -999,14 +1002,14 @@ def _get_feature_names_from_model(model_obj) -> list[str]:
             names = feat_step.get_feature_names_out()
             return [str(n) for n in names]
     except Exception:
-        pass
+        logger.debug("Could not read feature names from feat_selection step", exc_info=True)
 
     # Fallbacks
     try:
         if hasattr(model_obj, 'feature_names_in_'):
             return [str(n) for n in model_obj.feature_names_in_]
     except Exception:
-        pass
+        logger.debug("Could not read feature_names_in_ from model", exc_info=True)
 
     return []
 

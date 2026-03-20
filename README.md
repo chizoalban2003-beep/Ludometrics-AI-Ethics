@@ -71,12 +71,13 @@ Opens automatically at **`http://localhost:8501`**.
 
 | # | Page | Description |
 |---|---|---|
-| 1️⃣ | 🏠 **Overview** | Objectives, workflow pipeline, key metrics |
+| 1️⃣ | 🏠 **Overview** | Objectives, workflow pipeline, key metrics, business-scenario mapping |
 | 2️⃣ | 📊 **Dataset & EDA** | Statistics, distributions, correlations |
 | 3️⃣ | 🔧 **Feature Engineering** | 5-stage pipeline with formulas |
 | 4️⃣ | 🎯 **Model Prediction** | Real-time predictions (manual/sample) |
-| 5️⃣ | 📈 **Model Performance** | Metrics, confusion matrix, ROC-AUC |
-| 6️⃣ | 🛠 **Diagnostics** *(Technical mode only)* | Cache clearing, artifact checks, export helpers |
+| 5️⃣ | 🧭 **Guided Play** | Compare 2–4 move options (scenario/manual/business modes) with probability ranking |
+| 6️⃣ | 📈 **Model Performance** | Metrics, confusion matrix, ROC-AUC |
+| 7️⃣ | 🛠 **Diagnostics** *(Technical mode only)* | Cache clearing, artifact checks, export helpers |
 
 ### Setup & Installation
 
@@ -106,6 +107,7 @@ streamlit run streamlit_app.py
 
 ✅ Complete ML pipeline visualization  
 ✅ Real-time predictions with confidence scores  
+✅ Guided Play mode for option ranking (OR/game-theory style decision support)  
 ✅ Interactive Plotly visualizations  
 ✅ Performance metrics & confusion matrix  
 ✅ Feature importance rankings  
@@ -137,21 +139,28 @@ Fastest way to share publicly:
 - Built specifically for Streamlit apps
 - No infrastructure management
 
-#### Option 2: Heroku with Gunicorn + Flask
+#### Option 2: Heroku (Current Deployment) 🚀
 
-1. Create Flask wrapper around model
-2. Add `Procfile`:
-   ```
-   web: gunicorn app:app
-   ```
-3. Commit with `requirements.txt` and `runtime.txt`
-4. Push to Heroku:
+This project deploys Streamlit directly on Heroku using the included `Procfile`:
+
+```Procfile
+web: streamlit run streamlit_app.py --server.headless=true --server.address=0.0.0.0 --server.port=$PORT
+```
+
+Deploy steps:
+1. Ensure Heroku app exists.
+2. Add remote and push:
    ```bash
+   heroku git:remote -a <your-heroku-app-name>
    git push heroku main
    ```
-5. **Live URL**: `https://ludomaniac-[timestamp].herokuapp.com/`
+3. Open app:
+   ```bash
+   heroku open
+   ```
 
-**Advantages**: More control, scalable, REST API support
+Current live app:
+`https://ludomaniac-d84ae0cd7fb5.herokuapp.com/`
 
 #### Option 3: Docker Containerization (Production)
 
@@ -193,10 +202,9 @@ jupyter nbconvert --to html Feature_engineering.ipynb
 
 ```
 ludomaniac/
-├── streamlit_app.py              ← Main dashboard (5+ pages)
+├── streamlit_app.py              ← Main dashboard (audience-based, up to 7 pages)
 ├── .streamlit/
 │   └── config.toml              ← Theme & settings
-├── streamlit_requirements.txt   ← Minimal deps for Streamlit Cloud
 ├── jupyter_notebooks/
 │   ├── create_dataset.ipynb     ← Generate dataset
 │   ├── Ludo_EDA.ipynb           ← EDA analysis

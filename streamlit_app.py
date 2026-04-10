@@ -1171,15 +1171,37 @@ audience = st.sidebar.radio(
 )
 
 PAGES_BY_AUDIENCE: dict[str, list[str]] = {
-    "Non-technical": ["🏠 Overview", "🎯 Model Prediction", "🧭 Guided Play", "📈 Model Performance"],
-    "Semi-technical": ["🏠 Overview", "📊 Dataset & EDA", "🎯 Model Prediction", "🧭 Guided Play", "📈 Model Performance"],
+    "Non-technical": [
+        "🏠 Overview",
+        "🎯 Model Prediction",
+        "🧭 Guided Play",
+        "🎮 Live Game Companion",
+        "🤖 AI Showdown",
+        "🏆 Leaderboard",
+        "📈 Model Performance",
+    ],
+    "Semi-technical": [
+        "🏠 Overview",
+        "📊 Dataset & EDA",
+        "🎯 Model Prediction",
+        "🧭 Guided Play",
+        "🎮 Live Game Companion",
+        "🤖 AI Showdown",
+        "🏆 Leaderboard",
+        "📈 Model Performance",
+        "🏫 OR / Decision Lab",
+    ],
     "Technical": [
         "🏠 Overview",
         "📊 Dataset & EDA",
         "🔧 Feature Engineering",
         "🎯 Model Prediction",
         "🧭 Guided Play",
+        "🎮 Live Game Companion",
+        "🤖 AI Showdown",
+        "🏆 Leaderboard",
         "📈 Model Performance",
+        "🏫 OR / Decision Lab",
         "🛠 Diagnostics",
     ],
 }
@@ -1345,6 +1367,51 @@ if page == "🏠 Overview":
         "For live demos to non-technical audiences, use **🧭 Guided Play**: enter 2–4 legal move options and let the app "
         "recommend the option with the highest predicted win probability."
     )
+
+    st.markdown("---")
+    st.subheader("🚀 What This Project Can Become")
+    st.markdown(
+        "The current framework is a complete supervised-ML pipeline on a game simulator. "
+        "Below are the growth paths now implemented or planned:"
+    )
+    roadmap = [
+        {
+            "Feature": "🎮 Live Game Companion",
+            "Status": "✅ Live",
+            "Description": "Track a real physical Ludo game turn-by-turn and see ML win-probability updates after every move.",
+        },
+        {
+            "Feature": "🤖 AI Showdown",
+            "Status": "✅ Live",
+            "Description": "Simulate a full 4-player game with a greedy AI policy and watch the probability timeline unfold. Includes multi-game batch stats.",
+        },
+        {
+            "Feature": "🏆 Session Leaderboard",
+            "Status": "✅ Live",
+            "Description": "Record game results across sessions (physical, companion, or showdown) and track per-player win rates and average game length.",
+        },
+        {
+            "Feature": "🏫 OR / Decision Lab",
+            "Status": "✅ Live",
+            "Description": "Re-frames Ludo moves as 4 configurable business scenarios (inventory, projects, queuing, campaigns) and ranks decisions by ML-predicted success probability.",
+        },
+        {
+            "Feature": "🤖 Reinforcement Learning Agent",
+            "Status": "🔜 Planned",
+            "Description": "Train an RL agent (e.g. DQN) that uses the win-probability model as reward signal — turning the system into a self-improving game AI.",
+        },
+        {
+            "Feature": "📱 Mobile-first companion",
+            "Status": "🔜 Planned",
+            "Description": "Responsive layout + QR-code sharing so players can use the companion on a phone while the board sits on a table.",
+        },
+        {
+            "Feature": "🌐 Multiplayer strategy optimizer",
+            "Status": "🔜 Planned",
+            "Description": "Track all four players simultaneously and display a live 'threat map' — showing each player's danger level to others.",
+        },
+    ]
+    st.dataframe(pd.DataFrame(roadmap), use_container_width=True, hide_index=True)
 
     _render_ethics_and_limitations(audience)
 
@@ -3091,6 +3158,709 @@ elif page == "📈 Model Performance":
     st.plotly_chart(fig_imp, use_container_width=True)
     
     st.markdown("**Key Insight:** Engineered features (with 'eng_' prefix) dominate top importances, validating the feature engineering approach.")
+
+# ============================================================================
+# PAGE: LIVE GAME COMPANION (routing)
+# ============================================================================
+
+elif page == "🎮 Live Game Companion":
+    model, df = _require_production_context(model, df)
+    _render_live_game_companion(model)
+
+# ============================================================================
+# PAGE: AI SHOWDOWN (routing)
+# ============================================================================
+
+elif page == "🤖 AI Showdown":
+    model, df = _require_production_context(model, df)
+    _render_ai_showdown(model)
+
+# ============================================================================
+# PAGE: LEADERBOARD (routing)
+# ============================================================================
+
+elif page == "🏆 Leaderboard":
+    _render_leaderboard()
+
+# ============================================================================
+# PAGE: OR / DECISION LAB (routing)
+# ============================================================================
+
+elif page == "🏫 OR / Decision Lab":
+    model, df = _require_production_context(model, df)
+    _render_or_decision_lab(model)
+
+# ============================================================================
+# SHARED HELPERS FOR NEW PAGES
+# ============================================================================
+
+def _board_svg(positions_by_player: dict[str, list[float]], finish_pos: int = 57) -> str:
+    """Return a minimal SVG string visualising token positions on a linear 0–57 track."""
+    colors = {"Red": "#e74c3c", "Green": "#2ecc71", "Yellow": "#f1c40f", "Blue": "#3498db"}
+    track_len = finish_pos + 1
+    w, h = 760, 90
+    cell_w = w / track_len
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
+        f'style="background:#1e1e2e;border-radius:8px;font-family:sans-serif;">',
+    ]
+    # Draw track cells
+    for i in range(track_len):
+        x = i * cell_w
+        shade = "#2a2a3e" if i % 2 == 0 else "#1e1e2e"
+        lines.append(f'<rect x="{x:.1f}" y="10" width="{cell_w:.1f}" height="50" fill="{shade}" stroke="#444" stroke-width="0.5"/>')
+        if i in (0, finish_pos) or i % 10 == 0:
+            lines.append(f'<text x="{x + cell_w/2:.1f}" y="76" text-anchor="middle" fill="#888" font-size="9">{i}</text>')
+    # Draw tokens
+    player_order = ["Red", "Green", "Yellow", "Blue"]
+    offsets = [-12, -4, 4, 12]
+    for pidx, player in enumerate(player_order):
+        c = colors.get(player, "#fff")
+        for tok_pos in positions_by_player.get(player, []):
+            pos = max(0, min(int(tok_pos), finish_pos))
+            cx = pos * cell_w + cell_w / 2
+            cy = 35 + offsets[pidx]
+            lines.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="6" fill="{c}" stroke="#fff" stroke-width="1.2"/>')
+    lines.append("</svg>")
+    return "\n".join(lines)
+
+
+def _prob_history_chart(history: list[dict]) -> "go.Figure":
+    """Return a Plotly line chart from a list of {turn, player, prob} dicts."""
+    if not history:
+        return go.Figure()
+    df_h = pd.DataFrame(history)
+    colors = {"Red": "#e74c3c", "Green": "#2ecc71", "Yellow": "#f1c40f", "Blue": "#3498db"}
+    fig = go.Figure()
+    for player in sorted(df_h["player"].unique()):
+        sub = df_h[df_h["player"] == player].sort_values("turn")
+        fig.add_trace(go.Scatter(
+            x=sub["turn"], y=sub["prob"],
+            mode="lines+markers",
+            name=player,
+            line=dict(color=colors.get(player, "#fff"), width=2),
+            marker=dict(size=5),
+        ))
+    fig.update_layout(
+        title="Win Probability Over Turns",
+        xaxis_title="Turn",
+        yaxis_title="Win Probability",
+        yaxis=dict(range=[0, 1], tickformat=".0%"),
+        hovermode="x unified",
+        height=320,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=50, b=30),
+    )
+    return fig
+
+
+def _score_all_players(
+    raw_rows_by_player: dict[str, dict],
+    predictor: "ProductionLudoPredictor",
+    turn: int,
+) -> dict[str, float]:
+    """Run inference for all four players and return {player: win_prob}."""
+    result: dict[str, float] = {}
+    for player, row_vals in raw_rows_by_player.items():
+        try:
+            row_df = pd.DataFrame([{**row_vals, "Player": player, "Turn": turn}])
+            X = _prepare_model_matrix(row_df, predictor)
+            prob = float(predictor.predict_proba(X)[0][1])
+        except Exception:
+            prob = 0.25
+        result[player] = prob
+    return result
+
+
+def _normalise_probs(probs: dict[str, float]) -> dict[str, float]:
+    """Scale probabilities so they sum to 1 (for display sanity)."""
+    total = sum(probs.values())
+    if total <= 0:
+        n = len(probs)
+        return {k: 1.0 / n for k in probs}
+    return {k: v / total for k, v in probs.items()}
+
+
+# ============================================================================
+# PAGE: LIVE GAME COMPANION
+# ============================================================================
+
+def _render_live_game_companion(predictor: "ProductionLudoPredictor") -> None:
+    st.title("🎮 Live Game Companion")
+    st.markdown(
+        "Track a real Ludo game turn-by-turn. After each move, update the board state "
+        "and the AI will show each player's current win probability — updated live."
+    )
+
+    # Session-state initialisation
+    if "lgc_turn" not in st.session_state:
+        st.session_state.lgc_turn = 1
+    if "lgc_history" not in st.session_state:
+        st.session_state.lgc_history: list[dict] = []
+    if "lgc_positions" not in st.session_state:
+        # {player: [tok1, tok2, tok3, tok4]} all starting at home (0)
+        st.session_state.lgc_positions: dict[str, list[float]] = {
+            p: [0.0, 0.0, 0.0, 0.0] for p in ["Red", "Green", "Yellow", "Blue"]
+        }
+    if "lgc_game_over" not in st.session_state:
+        st.session_state.lgc_game_over = False
+
+    col_ctrl, col_board = st.columns([1, 2])
+
+    with col_ctrl:
+        st.subheader("📝 Record a move")
+        active_player = st.selectbox("Whose move?", ["Red", "Green", "Yellow", "Blue"], key="lgc_active")
+        dice_roll = st.number_input("Dice roll", min_value=1, max_value=6, value=1, step=1, key="lgc_dice")
+
+        positions = st.session_state.lgc_positions[active_player]
+        st.caption(f"{active_player}'s tokens: {[int(p) for p in positions]}")
+
+        token_idx = st.selectbox(
+            "Which token moved? (1–4, or 0 = no move)",
+            [0, 1, 2, 3, 4],
+            format_func=lambda x: f"Token {x}" if x > 0 else "No move",
+            key="lgc_token",
+        )
+        captured = st.checkbox("Captured an opponent token?", key="lgc_captured")
+
+        if st.button("✅ Record move & update AI", key="lgc_record", disabled=st.session_state.lgc_game_over):
+            turn = st.session_state.lgc_turn
+            # Compute position_before / after
+            if token_idx > 0:
+                pos_before = float(positions[token_idx - 1])
+                pos_after = float(_bounce_position_after(pos_before, int(dice_roll)))
+                st.session_state.lgc_positions[active_player][token_idx - 1] = pos_after
+            else:
+                pos_before = 0.0
+                pos_after = 0.0
+
+            tokens_home, tokens_active, tokens_finished = _token_state_counts_from_positions(
+                st.session_state.lgc_positions[active_player]
+            )
+
+            # Build raw rows for all players to score
+            raw_rows: dict[str, dict] = {}
+            for p in ["Red", "Green", "Yellow", "Blue"]:
+                tok_pos = st.session_state.lgc_positions[p]
+                h, a, f_ = _token_state_counts_from_positions(tok_pos)
+                raw_rows[p] = {
+                    "Dice_Roll": int(dice_roll) if p == active_player else 1,
+                    "Token_Moved": token_idx if p == active_player else 0,
+                    "Position_Before": pos_before if p == active_player else max(tok_pos),
+                    "Position_After": pos_after if p == active_player else max(tok_pos),
+                    "Tokens_Home": h,
+                    "Tokens_Active": a,
+                    "Tokens_Finished": f_,
+                    "Captured_Opponent": int(captured) if p == active_player else 0,
+                    "Game_ID": 0,
+                }
+
+            probs = _normalise_probs(_score_all_players(raw_rows, predictor, turn))
+            for p, prob in probs.items():
+                st.session_state.lgc_history.append({"turn": turn, "player": p, "prob": prob})
+
+            # Check for winner (any player with all 4 tokens at finish)
+            for p in ["Red", "Green", "Yellow", "Blue"]:
+                if all(pos >= 57 for pos in st.session_state.lgc_positions[p]):
+                    st.session_state.lgc_game_over = True
+                    st.success(f"🏆 {p} has won the game!")
+
+            st.session_state.lgc_turn += 1
+
+        if st.button("🔄 Reset game", key="lgc_reset"):
+            for key in ["lgc_turn", "lgc_history", "lgc_positions", "lgc_game_over"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+
+    with col_board:
+        st.subheader("🎯 Board State")
+        st.markdown(
+            st.session_state.lgc_positions.__str__() if False else "",  # placeholder rendered below
+        )
+        svg = _board_svg(st.session_state.lgc_positions)
+        st.markdown(f'<div style="overflow-x:auto">{svg}</div>', unsafe_allow_html=True)
+        st.caption("Each coloured dot = one token. Left = home (0), right = finish (57).")
+
+        if st.session_state.lgc_history:
+            fig_h = _prob_history_chart(st.session_state.lgc_history)
+            st.plotly_chart(fig_h, use_container_width=True)
+
+            # Current probabilities
+            latest_turn = max(e["turn"] for e in st.session_state.lgc_history)
+            latest = {e["player"]: e["prob"] for e in st.session_state.lgc_history if e["turn"] == latest_turn}
+            st.subheader("📊 Current Win Probabilities")
+            prob_cols = st.columns(4)
+            player_colors = {"Red": "🔴", "Green": "🟢", "Yellow": "🟡", "Blue": "🔵"}
+            for i, p in enumerate(["Red", "Green", "Yellow", "Blue"]):
+                with prob_cols[i]:
+                    st.metric(f"{player_colors.get(p, '')} {p}", f"{latest.get(p, 0.25):.1%}")
+        else:
+            st.info("Record your first move to see AI probabilities.")
+
+
+# ============================================================================
+# PAGE: AI SHOWDOWN
+# ============================================================================
+
+def _greedy_policy_move(
+    tokens: list[float],
+    dice_roll: int,
+    finish_pos: int = 57,
+) -> tuple[int, float, float]:
+    """Pick the move that maximises Position_After (greedy advancement).
+
+    Returns (token_idx_0based, pos_before, pos_after).
+    """
+    moves = _legal_moves_from_positions(tokens, dice_roll, finish_pos)
+    if not moves:
+        return -1, 0.0, 0.0
+    best = max(moves, key=lambda m: m["Position_After"])
+    return int(best["Token_Moved"]) - 1, float(best["Position_Before"]), float(best["Position_After"])
+
+
+@st.cache_data(show_spinner=False)
+def _simulate_ai_game(
+    seed: int,
+    predictor_feature_cols: tuple[str, ...],
+    model_path_str: str,
+) -> dict:
+    """Simulate a full 4-player game using the greedy policy, scoring every turn.
+
+    Returns a dict with turn-level data and final winner.
+    """
+    import random as _rng_mod
+
+    rng = _rng_mod.Random(seed)
+    finish_pos = 57
+
+    predictor = load_production_model_from_path(Path(model_path_str))
+    if predictor is None:
+        # Fall back to experimental RF if no artifact is available
+        predictor = _train_experimental_random_forest_predictor(
+            load_dataset(),
+            predictor_feature_cols,
+        )
+
+    positions = {p: [0.0, 0.0, 0.0, 0.0] for p in ["Red", "Green", "Yellow", "Blue"]}
+    player_order = ["Red", "Green", "Yellow", "Blue"]
+    history: list[dict] = []
+    turn = 1
+    winner = None
+    max_turns = 2000  # safety cap
+
+    while winner is None and turn <= max_turns:
+        for active in player_order:
+            if winner:
+                break
+            dice_roll = rng.randint(1, 6)
+            tok_idx, pos_b, pos_a = _greedy_policy_move(positions[active], dice_roll, finish_pos)
+
+            if tok_idx >= 0:
+                positions[active][tok_idx] = pos_a
+                if all(p >= finish_pos for p in positions[active]):
+                    winner = active
+
+            # Score all players
+            raw_rows: dict[str, dict] = {}
+            for p in player_order:
+                tok_pos = positions[p]
+                h, a_cnt, f_ = _token_state_counts_from_positions(tok_pos)
+                raw_rows[p] = {
+                    "Dice_Roll": dice_roll if p == active else 1,
+                    "Token_Moved": tok_idx + 1 if (tok_idx >= 0 and p == active) else 0,
+                    "Position_Before": pos_b if p == active else max(tok_pos),
+                    "Position_After": pos_a if p == active else max(tok_pos),
+                    "Tokens_Home": h,
+                    "Tokens_Active": a_cnt,
+                    "Tokens_Finished": f_,
+                    "Captured_Opponent": 0,
+                    "Game_ID": seed,
+                }
+
+            probs = _normalise_probs(_score_all_players(raw_rows, predictor, turn))
+            for p, prob in probs.items():
+                history.append({"turn": turn, "player": p, "prob": prob, "active": active == p})
+
+            turn += 1
+
+    return {
+        "winner": winner or "No winner (cap)",
+        "total_turns": turn - 1,
+        "history": history,
+        "final_positions": {p: positions[p][:] for p in player_order},
+        "seed": seed,
+    }
+
+
+def _render_ai_showdown(predictor: "ProductionLudoPredictor") -> None:
+    st.title("🤖 AI Showdown")
+    st.markdown(
+        "Watch four AI players (using a greedy *advance-furthest-token* policy) play a full Ludo game. "
+        "The ML model scores every move live, producing a probability timeline showing how the game evolved."
+    )
+
+    col_cfg, col_run = st.columns([1, 3])
+
+    with col_cfg:
+        seed = st.number_input("Game seed (for reproducibility)", min_value=0, value=42, step=1, key="asd_seed")
+        if st.button("▶ Simulate game", key="asd_run"):
+            # Work out the model path to pass (cache-safe string)
+            rf_path = RF_ARTIFACT_PATH
+            gb_path = _resolve_gb_artifact_path()
+            model_path_str = str(rf_path if rf_path.exists() else gb_path)
+
+            with st.spinner("Simulating game…"):
+                result = _simulate_ai_game(
+                    seed=int(seed),
+                    predictor_feature_cols=tuple(predictor.feature_columns),
+                    model_path_str=model_path_str,
+                )
+            st.session_state["asd_result"] = result
+
+    with col_run:
+        result = st.session_state.get("asd_result")
+        if result is None:
+            st.info("Configure a seed and click **▶ Simulate game** to begin.")
+            return
+
+        winner = result["winner"]
+        total_turns = result["total_turns"]
+        history = result["history"]
+        final_positions = result["final_positions"]
+
+        player_colors = {"Red": "🔴", "Green": "🟢", "Yellow": "🟡", "Blue": "🔵"}
+        st.success(f"🏆 Winner: **{player_colors.get(winner,'')} {winner}** in {total_turns} turns (seed={result['seed']})")
+
+        # Board final state
+        st.subheader("Final Board Position")
+        svg = _board_svg(final_positions)
+        st.markdown(f'<div style="overflow-x:auto">{svg}</div>', unsafe_allow_html=True)
+
+        # Probability timeline
+        st.subheader("Win Probability Timeline")
+        fig = _prob_history_chart(history)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Turn-level data table (collapsible)
+        with st.expander("Turn-level data", expanded=False):
+            df_hist = pd.DataFrame(history)
+            st.dataframe(df_hist.tail(200), use_container_width=True)
+
+        # Multi-game stats (run N seeds)
+        st.markdown("---")
+        st.subheader("📊 Multi-game win statistics")
+        n_games = st.slider("Number of games to simulate", min_value=5, max_value=100, value=20, step=5, key="asd_ngames")
+        if st.button("Run batch simulation", key="asd_batch"):
+            rf_path2 = RF_ARTIFACT_PATH
+            gb_path2 = _resolve_gb_artifact_path()
+            mp2 = str(rf_path2 if rf_path2.exists() else gb_path2)
+            win_counts: dict[str, int] = {"Red": 0, "Green": 0, "Yellow": 0, "Blue": 0}
+            turn_counts: list[int] = []
+            prog = st.progress(0)
+            for i in range(int(n_games)):
+                r = _simulate_ai_game(
+                    seed=i,
+                    predictor_feature_cols=tuple(predictor.feature_columns),
+                    model_path_str=mp2,
+                )
+                w = r["winner"]
+                if w in win_counts:
+                    win_counts[w] += 1
+                turn_counts.append(r["total_turns"])
+                prog.progress((i + 1) / int(n_games))
+            prog.empty()
+
+            fig_wins = px.bar(
+                x=list(win_counts.keys()),
+                y=list(win_counts.values()),
+                color=list(win_counts.keys()),
+                color_discrete_map={"Red": "#e74c3c", "Green": "#2ecc71", "Yellow": "#f1c40f", "Blue": "#3498db"},
+                title=f"Win counts over {n_games} games (greedy policy)",
+                labels={"x": "Player", "y": "Wins"},
+            )
+            st.plotly_chart(fig_wins, use_container_width=True)
+            st.metric("Avg turns per game", f"{sum(turn_counts)/len(turn_counts):.1f}")
+
+
+# ============================================================================
+# PAGE: LEADERBOARD
+# ============================================================================
+
+def _render_leaderboard() -> None:
+    st.title("🏆 Session Leaderboard")
+    st.markdown(
+        "Track wins across games played in this browser session. "
+        "Use the form below to record a result from any game you play (physical, Live Game Companion, or AI Showdown)."
+    )
+
+    if "leaderboard" not in st.session_state:
+        st.session_state.leaderboard: list[dict] = []
+
+    with st.form("lb_form", clear_on_submit=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            lb_winner = st.selectbox("Winner", ["Red", "Green", "Yellow", "Blue"])
+        with col2:
+            lb_turns = st.number_input("Turns taken", min_value=1, value=50, step=1)
+        with col3:
+            lb_mode = st.selectbox("Mode", ["Physical game", "Live Companion", "AI Showdown", "Other"])
+        lb_note = st.text_input("Optional note", placeholder="e.g. 'Red captured 3 tokens'")
+        submitted = st.form_submit_button("➕ Record result")
+        if submitted:
+            import datetime
+            st.session_state.leaderboard.append({
+                "time": datetime.datetime.now().strftime("%H:%M:%S"),
+                "winner": lb_winner,
+                "turns": int(lb_turns),
+                "mode": lb_mode,
+                "note": lb_note,
+            })
+            st.success(f"Recorded win for {lb_winner}!")
+
+    if not st.session_state.leaderboard:
+        st.info("No games recorded yet. Play a game and record the result above.")
+        return
+
+    df_lb = pd.DataFrame(st.session_state.leaderboard)
+
+    # Summary metrics
+    win_counts = df_lb["winner"].value_counts().to_dict()
+    st.subheader("Win Counts")
+    cols = st.columns(4)
+    player_icons = {"Red": "🔴", "Green": "🟢", "Yellow": "🟡", "Blue": "🔵"}
+    for i, p in enumerate(["Red", "Green", "Yellow", "Blue"]):
+        with cols[i]:
+            st.metric(f"{player_icons.get(p,'')} {p}", win_counts.get(p, 0))
+
+    # Win chart
+    fig_lb = px.bar(
+        x=list(win_counts.keys()),
+        y=list(win_counts.values()),
+        color=list(win_counts.keys()),
+        color_discrete_map={"Red": "#e74c3c", "Green": "#2ecc71", "Yellow": "#f1c40f", "Blue": "#3498db"},
+        title="Win Distribution",
+        labels={"x": "Player", "y": "Wins"},
+    )
+    st.plotly_chart(fig_lb, use_container_width=True)
+
+    # Avg turns
+    avg_turns = df_lb.groupby("winner")["turns"].mean().reset_index()
+    avg_turns.columns = ["Player", "Avg Turns to Win"]
+    fig_turns = px.bar(
+        avg_turns, x="Player", y="Avg Turns to Win",
+        color="Player",
+        color_discrete_map={"Red": "#e74c3c", "Green": "#2ecc71", "Yellow": "#f1c40f", "Blue": "#3498db"},
+        title="Average Turns to Win per Player",
+    )
+    st.plotly_chart(fig_turns, use_container_width=True)
+
+    # Full log
+    st.subheader("Game Log")
+    st.dataframe(df_lb[::-1].reset_index(drop=True), use_container_width=True)
+
+    if st.button("🗑 Clear leaderboard"):
+        st.session_state.leaderboard = []
+        st.rerun()
+
+
+# ============================================================================
+# PAGE: OR / DECISION LAB
+# ============================================================================
+
+_OR_SCENARIOS = {
+    "Inventory Replenishment": {
+        "description": (
+            "A warehouse has 4 product lines (tokens). Each period a demand signal (dice roll) arrives. "
+            "You can restock (advance) one product line. Win = all 4 lines reach full stock (position 57)."
+        ),
+        "ludo_map": {
+            "Turn": "Decision period",
+            "Dice_Roll": "Demand / capacity available",
+            "Token_Moved": "Product line selected for restock",
+            "Position_After": "Stock level after restock",
+            "Tokens_Home": "Lines with zero stock",
+            "Tokens_Active": "Lines partially stocked",
+            "Tokens_Finished": "Lines at full stock",
+            "Captured_Opponent": "Competitor captures market share (disruption)",
+            "Win Probability": "P(all lines fully stocked before competitors)",
+        },
+    },
+    "Project Portfolio Management": {
+        "description": (
+            "A PMO manages 4 projects (tokens). Each sprint (dice roll = velocity) one project advances. "
+            "Win = all 4 projects delivered (position 57)."
+        ),
+        "ludo_map": {
+            "Turn": "Sprint / iteration",
+            "Dice_Roll": "Team velocity",
+            "Token_Moved": "Project selected this sprint",
+            "Position_After": "Project progress after sprint",
+            "Tokens_Home": "Projects not yet started",
+            "Tokens_Active": "Projects in flight",
+            "Tokens_Finished": "Projects delivered",
+            "Captured_Opponent": "Competitor launches a rival product",
+            "Win Probability": "P(portfolio delivered ahead of all competitors)",
+        },
+    },
+    "Resource Scheduling (Queueing)": {
+        "description": (
+            "4 job queues (tokens) wait for processor capacity (dice roll). "
+            "Each cycle one queue is advanced. Win = all queues drained (position 57)."
+        ),
+        "ludo_map": {
+            "Turn": "Scheduling epoch",
+            "Dice_Roll": "Available CPU / server capacity",
+            "Token_Moved": "Queue selected for service",
+            "Position_After": "Queue drain progress",
+            "Tokens_Home": "Queues with no jobs started",
+            "Tokens_Active": "Queues with jobs in progress",
+            "Tokens_Finished": "Queues fully drained",
+            "Captured_Opponent": "New high-priority job preempts another queue",
+            "Win Probability": "P(drain all queues first)",
+        },
+    },
+    "Marketing Campaign Allocation": {
+        "description": (
+            "4 marketing campaigns (tokens) compete for budget (dice roll). "
+            "Each week one campaign receives spend. Win = all campaigns reach conversion target (position 57)."
+        ),
+        "ludo_map": {
+            "Turn": "Week / planning cycle",
+            "Dice_Roll": "Weekly budget available",
+            "Token_Moved": "Campaign funded this week",
+            "Position_After": "Cumulative conversion progress",
+            "Tokens_Home": "Campaigns not yet launched",
+            "Tokens_Active": "Campaigns running",
+            "Tokens_Finished": "Campaigns that hit conversion target",
+            "Captured_Opponent": "Competitor campaign overtakes your segment",
+            "Win Probability": "P(all campaigns hit target first)",
+        },
+    },
+}
+
+
+def _render_or_decision_lab(predictor: "ProductionLudoPredictor") -> None:
+    st.title("🏫 OR / Decision Lab")
+    st.markdown(
+        "This lab re-frames Ludo mechanics as configurable business decision problems. "
+        "Choose a scenario, define your current state, and compare decision options ranked by the ML model."
+    )
+
+    scenario_name = st.selectbox("Select OR scenario", list(_OR_SCENARIOS.keys()))
+    scenario = _OR_SCENARIOS[scenario_name]
+
+    st.markdown(f"**{scenario_name}:** {scenario['description']}")
+
+    with st.expander("Concept mapping (Ludo → this scenario)", expanded=True):
+        rows = [{"Ludo concept": k, "Business meaning": v} for k, v in scenario["ludo_map"].items()]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("🎯 Compare Decisions")
+    st.markdown(
+        "Enter your current state and up to 4 candidate decisions (which token/resource to advance). "
+        "The model will rank them by predicted success probability."
+    )
+
+    n_options = st.slider("Number of decision options", min_value=2, max_value=4, value=2)
+
+    with st.form("or_lab_form"):
+        col_shared, col_opts = st.columns([1, 2])
+
+        with col_shared:
+            st.markdown("**Shared state**")
+            turn = st.number_input("Period / Turn", min_value=1, value=10, step=1)
+            dice_roll = st.number_input("Capacity / Dice roll", min_value=1, max_value=6, value=3, step=1)
+            tokens_home = st.number_input("Units not started (Tokens_Home)", min_value=0, max_value=4, value=1, step=1)
+            tokens_active = st.number_input("Units in progress (Tokens_Active)", min_value=0, max_value=4, value=2, step=1)
+            tokens_finished = st.number_input("Units completed (Tokens_Finished)", min_value=0, max_value=4, value=1, step=1)
+            captured = st.number_input("Disruption event (0 or 1)", min_value=0, max_value=1, value=0, step=1)
+
+        with col_opts:
+            st.markdown("**Decision options** — what to advance")
+            options_data: list[dict] = []
+            for i in range(n_options):
+                st.markdown(f"**Option {chr(65+i)}**")
+                oc1, oc2, oc3 = st.columns(3)
+                with oc1:
+                    tm = st.number_input(f"Token/unit moved", min_value=0, max_value=4, value=i+1, step=1, key=f"or_tm_{i}")
+                with oc2:
+                    pb = st.number_input(f"Progress before", min_value=0.0, value=float(10 + i * 5), step=1.0, key=f"or_pb_{i}")
+                with oc3:
+                    pa = st.number_input(f"Progress after", min_value=0.0, value=float(10 + i * 5 + int(dice_roll)), step=1.0, key=f"or_pa_{i}")
+                options_data.append({"Token_Moved": tm, "Position_Before": pb, "Position_After": pa})
+
+        submitted = st.form_submit_button("⚡ Rank decisions")
+
+    if submitted:
+        results: list[dict] = []
+        for i, opt in enumerate(options_data):
+            row = {
+                "Player": "Red",
+                "Turn": int(turn),
+                "Dice_Roll": int(dice_roll),
+                "Token_Moved": int(opt["Token_Moved"]),
+                "Position_Before": float(opt["Position_Before"]),
+                "Position_After": float(opt["Position_After"]),
+                "Tokens_Home": int(tokens_home),
+                "Tokens_Active": int(tokens_active),
+                "Tokens_Finished": int(tokens_finished),
+                "Captured_Opponent": int(captured),
+                "Game_ID": 0,
+            }
+            try:
+                X = _prepare_model_matrix(pd.DataFrame([row]), predictor)
+                prob = float(predictor.predict_proba(X)[0][1])
+            except Exception as exc:
+                prob = float("nan")
+                st.warning(f"Option {chr(65+i)}: prediction failed ({exc})")
+            results.append({"Option": chr(65 + i), "Token/unit moved": int(opt["Token_Moved"]),
+                            "Progress before→after": f"{opt['Position_Before']:.0f} → {opt['Position_After']:.0f}",
+                            "Success Probability": prob})
+
+        results_df = pd.DataFrame(results).sort_values("Success Probability", ascending=False).reset_index(drop=True)
+        results_df["Rank"] = range(1, len(results_df) + 1)
+        best = results_df.iloc[0]
+
+        st.markdown("---")
+        st.subheader("📊 Decision Ranking")
+        st.dataframe(results_df[["Rank", "Option", "Token/unit moved", "Progress before→after", "Success Probability"]]
+                     .style.format({"Success Probability": "{:.1%}"}),
+                     use_container_width=True, hide_index=True)
+
+        st.success(
+            f"✅ Recommended: **Option {best['Option']}** "
+            f"(Success Probability: {best['Success Probability']:.1%})"
+        )
+        st.caption(
+            "Probabilities are from the Ludo win-prediction model. "
+            "Treat near-ties (< 5 pp difference) as equivalent options."
+        )
+
+        fig_rank = px.bar(
+            results_df,
+            x="Option",
+            y="Success Probability",
+            color="Option",
+            title="Decision options ranked by success probability",
+            labels={"Success Probability": "P(success)"},
+            text_auto=".1%",
+        )
+        fig_rank.update_layout(yaxis=dict(range=[0, 1], tickformat=".0%"), showlegend=False)
+        st.plotly_chart(fig_rank, use_container_width=True)
+
+        with st.expander("What this means in business terms"):
+            st.markdown(
+                f"In the **{scenario_name}** scenario:\n\n"
+                + "\n".join(f"- **Option {r['Option']}**: advance unit {r['Token/unit moved']} "
+                             f"({r['Progress before→after']}) → success probability {r['Success Probability']:.1%}"
+                             for _, r in results_df.iterrows())
+                + f"\n\nThe model's recommendation is to prioritise **Option {best['Option']}**. "
+                "This mirrors the OR principle of choosing the action that maximises expected utility "
+                "given current system state and available capacity."
+            )
+
 
 # ============================================================================
 # FOOTER

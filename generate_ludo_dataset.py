@@ -7,6 +7,8 @@ import random
 from pathlib import Path
 from typing import List, Tuple
 
+_HERE = Path(__file__).parent
+
 PLAYER_NAMES = ("Red", "Green", "Yellow", "Blue")
 TOKENS_PER_PLAYER = 4
 FINISH_POS = 57
@@ -184,20 +186,20 @@ def main() -> None:
     parser.add_argument(
         "--raw-output",
         type=Path,
-        default=Path("data file/Raw_Data/ludo_dataset.csv"),
+        default=_HERE / "data file" / "Raw_Data" / "ludo_dataset.csv",
         help="Path for raw dataset CSV.",
     )
     parser.add_argument(
         "--clean-output",
         type=Path,
-        default=Path("data file/Raw_Data/ludo_dataset_cleaned.csv"),
+        default=_HERE / "data file" / "Raw_Data" / "ludo_dataset_cleaned.csv",
         help="Path for cleaned dataset CSV copy.",
     )
 
     args = parser.parse_args()
 
     rows_written = generate_dataset(
-        min_rows=max(args.min_rows, 11000),
+        min_rows=args.min_rows,
         seed=args.seed,
         raw_output=args.raw_output,
         clean_output=args.clean_output,

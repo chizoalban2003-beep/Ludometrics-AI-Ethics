@@ -28,14 +28,17 @@ BASE_NUMERIC_FEATURES: list[str] = [
     "Captured_Opponent",
 ]
 
+# Resolve paths relative to this file so the app works regardless of CWD.
+_HERE = Path(__file__).parent
+
 DATASET_CANDIDATE_PATHS: list[Path] = [
-    Path("data file/Clean_Data/ludo_dataset_cleaned.csv"),
-    Path("data file/Raw_Data/ludo_dataset_cleaned.csv"),
+    _HERE / "data file" / "Clean_Data" / "ludo_dataset_cleaned.csv",
+    _HERE / "data file" / "Raw_Data" / "ludo_dataset_cleaned.csv",
 ]
 
-RF_ARTIFACT_PATH = Path("jupyter_notebooks/model/production_rf_predictor.pkl")
-GB_ARTIFACT_PATH = Path("jupyter_notebooks/model/production_gb_predictor.pkl")
-GB_LEGACY_ARTIFACT_PATH = Path("jupyter_notebooks/model/production_ludo_predictor.pkl")
+RF_ARTIFACT_PATH = _HERE / "jupyter_notebooks" / "model" / "production_rf_predictor.pkl"
+GB_ARTIFACT_PATH = _HERE / "jupyter_notebooks" / "model" / "production_gb_predictor.pkl"
+GB_LEGACY_ARTIFACT_PATH = _HERE / "jupyter_notebooks" / "model" / "production_ludo_predictor.pkl"
 
 logger = logging.getLogger(__name__)
 
@@ -473,9 +476,9 @@ def _show_model_inputs(X_model: pd.DataFrame) -> None:
         st.caption(f"Shape: {X_model.shape[0]} row(s) × {X_model.shape[1]} column(s)")
         if len(X_model) == 1:
             # Transpose for readability: one feature per row
-            st.dataframe(X_model.T.rename(columns={X_model.index[0]: "value"}), width="stretch")
+            st.dataframe(X_model.T.rename(columns={X_model.index[0]: "value"}))
         else:
-            st.dataframe(X_model, width="stretch")
+            st.dataframe(X_model, use_container_width=True)
 
 
 def _bounce_position_after(position_before: float, dice_roll: int, finish_pos: int = 57) -> float:
@@ -776,13 +779,16 @@ def _load_model_artifact():
     Streamlit hot-reloads can redefine classes, making `isinstance()` checks fail
     if the cached value is an old instance.
     """
-    # Prefer renamed artifact; fall back to legacy filename if present.
     preferred = GB_ARTIFACT_PATH
     legacy = GB_LEGACY_ARTIFACT_PATH
     model_path = preferred if preferred.exists() else legacy
     if not model_path.exists():
         return None
-    return joblib.load(model_path)
+    try:
+        return joblib.load(model_path)
+    except Exception as exc:
+        logger.warning("Failed to load model artifact at %s: %s", model_path, exc)
+        return None
 
 
 @st.cache_resource
@@ -791,7 +797,11 @@ def _load_model_artifact_from_path(model_path_str: str):
     model_path = Path(model_path_str)
     if not model_path.exists():
         return None
-    return joblib.load(model_path)
+    try:
+        return joblib.load(model_path)
+    except Exception as exc:
+        logger.warning("Failed to load model artifact at %s: %s", model_path, exc)
+        return None
 
 
 def _wrap_production_artifact(obj: Any) -> Any:
@@ -906,8 +916,8 @@ def _export_predictor_artifact(predictor: ProductionLudoPredictor, export_path: 
             "base_pipeline": predictor.base_pipeline,
             "platt_calibrator": predictor.platt_calibrator,
         }
-    artifact.setdefault("created_at_utc", pd.Timestamp.utcnow().isoformat())
-    artifact["exported_at_utc"] = pd.Timestamp.utcnow().isoformat()
+    artifact.setdefault("created_at_utc", pd.Timestamp.now("UTC").isoformat())
+    artifact["exported_at_utc"] = pd.Timestamp.now("UTC").isoformat()
     joblib.dump(artifact, export_path)
 
 @st.cache_data
@@ -915,7 +925,10 @@ def load_dataset():
     """Load the cleaned dataset for reference."""
     for path in DATASET_CANDIDATE_PATHS:
         if path.exists():
-            return pd.read_csv(path)
+            try:
+                return pd.read_csv(path)
+            except Exception as exc:
+                logger.warning("Failed to read dataset at %s: %s", path, exc)
     return None
 
 
@@ -1022,7 +1035,7 @@ def _is_categorical(series: pd.Series) -> bool:
     dtype = series.dtype
     return (
         pd.api.types.is_bool_dtype(dtype)
-        or pd.api.types.is_categorical_dtype(dtype)
+        or isinstance(dtype, pd.CategoricalDtype)
         or pd.api.types.is_object_dtype(dtype)
         or pd.api.types.is_string_dtype(dtype)
     )
@@ -1234,8 +1247,7 @@ if page == "🏠 Overview":
         st.markdown("### 5️⃣ **Deployment**\nServe via Streamlit\nfor real-time predictions")
     
     st.markdown("---")
-    
-    ### Business Requirements
+
     st.subheader("📋 Business Requirements")
     col1, col2 = st.columns(2)
     
@@ -1254,8 +1266,7 @@ if page == "🏠 Overview":
         """)
     
     st.markdown("---")
-    
-    ### Key Metrics
+
     st.subheader("🎯 Model Performance Summary")
     col1, col2, col3, col4, col5 = st.columns(5)
     
@@ -1271,8 +1282,7 @@ if page == "🏠 Overview":
         st.metric("ROC-AUC", "0.894", "+8.9%")
     
     st.markdown("---")
-    
-    ### How to Use This Dashboard
+
     st.subheader("📖 How to Use")
     st.markdown("""
     1. **Dataset & EDA**: Explore the Ludo dataset and see which features correlate with winning
@@ -1300,7 +1310,7 @@ if page == "🏠 Overview":
             {"Ludo concept": "Winner Probability", "Business analogue": "Risk score / success likelihood / expected utility proxy"},
             {"Ludo concept": "Decision threshold", "Business analogue": "Operational decision boundary (act vs wait)"},
         ]
-        st.dataframe(pd.DataFrame(mapping_rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(mapping_rows), use_container_width=True, hide_index=True)
 
     tabs = st.tabs(["1) Operations Research", "2) Game Theory", "3) Optimization"])
 
@@ -1371,11 +1381,11 @@ elif page == "📊 Dataset & EDA":
         st.markdown("---")
 
         st.subheader("Sample Data")
-        st.dataframe(df.head(10), width="stretch")
+        st.dataframe(df.head(10))
 
         with st.expander("Column types"):
             types_df = pd.DataFrame({"column": df.columns, "dtype": [str(dt) for dt in df.dtypes]})
-            st.dataframe(types_df, width="stretch", hide_index=True)
+            st.dataframe(types_df, use_container_width=True, hide_index=True)
 
         st.markdown("---")
 
@@ -1463,7 +1473,7 @@ elif page == "📊 Dataset & EDA":
                     fig_uni = px.pie(counts, names=selected_uni, values="count", title=f"Share of {selected_uni}")
                 else:
                     fig_uni.update_layout(bargap=0.2)
-            st.plotly_chart(fig_uni, width="stretch")
+            st.plotly_chart(fig_uni, use_container_width=True)
 
         st.markdown("---")
 
@@ -1575,7 +1585,7 @@ elif page == "📊 Dataset & EDA":
                         title=f"Counts: {y_col} vs {x_col}",
                     )
 
-                st.plotly_chart(fig_bi, width="stretch")
+                st.plotly_chart(fig_bi, use_container_width=True)
             except TypeError as exc:
                 st.error(
                     "That chart couldn't be rendered with the current settings. "
@@ -1605,7 +1615,7 @@ elif page == "📊 Dataset & EDA":
                         title="Scatter matrix (sampled for performance)",
                     )
                     fig_matrix.update_traces(diagonal_visible=False)
-                    st.plotly_chart(fig_matrix, width="stretch")
+                    st.plotly_chart(fig_matrix, use_container_width=True)
                 except Exception as e:
                     st.error(f"Could not render scatter matrix: {e}")
         elif len(numeric_cols) > 0:
@@ -1623,7 +1633,7 @@ elif page == "📊 Dataset & EDA":
                     zmin=-1,
                     zmax=1,
                 )
-                st.plotly_chart(fig_heat, width="stretch")
+                st.plotly_chart(fig_heat, use_container_width=True)
 
         if target_col is not None and target_col in df.columns and numeric_cols:
             st.markdown("---")
@@ -1636,7 +1646,7 @@ elif page == "📊 Dataset & EDA":
                 title="Spearman Correlation with Is_Winner",
                 labels={'x': 'Correlation Coefficient', 'y': 'Feature'}
             )
-            st.plotly_chart(fig_corr, width="stretch")
+            st.plotly_chart(fig_corr, use_container_width=True)
     
     else:
         st.warning("Dataset not found. Ensure data file exists at `data file/Clean_Data/ludo_dataset_cleaned.csv`")
@@ -1656,7 +1666,6 @@ elif page == "🔧 Feature Engineering":
     
     st.markdown("---")
     
-    ### Stage 1: Correlation Analysis
     st.subheader("Stage 1️⃣: Correlation Analysis")
     st.markdown("""
     - **Method**: Spearman Rank Correlation (captures non-linear relationships)
@@ -1664,7 +1673,6 @@ elif page == "🔧 Feature Engineering":
     - **Output**: Categorized pairs (strong-positive, strong-negative, weak-negative)
     """)
     
-    ### Stage 2: Statistical Weighting
     st.subheader("Stage 2️⃣: Mann-Whitney U Testing")
     st.markdown("""
     - **Method**: Non-parametric test for class-separation power
@@ -1672,7 +1680,6 @@ elif page == "🔧 Feature Engineering":
     - **Output**: Normalized weights (0 to 1) for each feature's discriminatory power
     """)
     
-    ### Stage 3: Transform Selection
     st.subheader("Stage 3️⃣: Transform Selection by Correlation Type")
     
     col1, col2, col3 = st.columns(3)
@@ -1711,7 +1718,6 @@ elif page == "🔧 Feature Engineering":
     
     st.markdown("---")
     
-    ### Stage 4: Blended Weighting
     st.subheader("Stage 4️⃣: Correlation-MWU Blend")
     st.markdown("""
     Combine Spearman correlation signal with Mann-Whitney class-separation power:
@@ -1723,7 +1729,6 @@ elif page == "🔧 Feature Engineering":
     - **0.75 dynamic**: Amplifies features with strong discriminatory power
     """)
     
-    ### Stage 5: Post-Scaling
     st.subheader("Stage 5️⃣: Post-Weighting with Floor")
     st.markdown("""
     Apply secondary MWU-based scaling after nonlinear transforms:
@@ -1737,7 +1742,6 @@ elif page == "🔧 Feature Engineering":
     
     st.markdown("---")
     
-    ### Feature Naming Legend
     st.subheader("📋 Feature Naming Legend")
     
     st.markdown("**Transform Tag Abbreviations:**")
@@ -1763,11 +1767,10 @@ elif page == "🔧 Feature Engineering":
     }
     
     alias_df = pd.DataFrame(list(aliases.items()), columns=['Alias', 'Full Name'])
-    st.dataframe(alias_df, width="stretch", hide_index=True)
+    st.dataframe(alias_df, use_container_width=True, hide_index=True)
     
     st.markdown("---")
     
-    ### Example Feature Breakdown
     st.subheader("📝 Example Engineered Feature")
     st.markdown("""
     **Feature Name:** `eng_sp_ratio_wm__tok_home__tok_fin`
@@ -1801,8 +1804,7 @@ elif page == "🎯 Model Prediction":
         player_options = _get_player_options(df)
         
         st.markdown("---")
-        
-        ### Input Method Selection
+
         input_method = st.radio("Select Input Method:", ["Manual Input", "Sample Game"])
         
         if input_method == "Manual Input":
@@ -1871,7 +1873,7 @@ elif page == "🎯 Model Prediction":
                     sample_data = df[df['Is_Winner'] == 0].sample(1, random_state=42)
                 
                 st.write("Sample Data:")
-                st.dataframe(sample_data, width="stretch")
+                st.dataframe(sample_data, use_container_width=True)
                 
                 if st.button("🎲 Predict on Sample"):
                     try:
@@ -2171,7 +2173,7 @@ elif page == "🧭 Guided Play":
         with preset_mid:
             st.button(
                 "Load preset",
-                width="stretch",
+                use_container_width=True,
                 key="gp_scenario_load",
                 on_click=_gp_apply_scenario_preset,
                 args=(scenario_presets.get(scenario_preset_name, {}),),
@@ -2179,7 +2181,7 @@ elif page == "🧭 Guided Play":
         with preset_right:
             st.button(
                 "Random preset",
-                width="stretch",
+                use_container_width=True,
                 key="gp_scenario_random",
                 on_click=_gp_apply_random_scenario_preset,
             )
@@ -2258,7 +2260,7 @@ elif page == "🧭 Guided Play":
                     }
                 )
 
-            st.dataframe(pd.DataFrame(options_payload), width="stretch", hide_index=True)
+            st.dataframe(pd.DataFrame(options_payload), use_container_width=True, hide_index=True)
 
     elif mode == "Business scenario (resource allocation)":
         st.subheader("Step 2 — Business scenario inputs")
@@ -2307,7 +2309,7 @@ elif page == "🧭 Guided Play":
         with preset_mid:
             st.button(
                 "Load preset",
-                width="stretch",
+                use_container_width=True,
                 key="gp_business_load",
                 on_click=_gp_apply_business_preset,
                 args=(presets.get(preset_name, {}),),
@@ -2315,7 +2317,7 @@ elif page == "🧭 Guided Play":
         with preset_right:
             st.button(
                 "Random preset",
-                width="stretch",
+                use_container_width=True,
                 key="gp_business_random",
                 on_click=_gp_apply_random_business_preset,
             )
@@ -2401,7 +2403,7 @@ elif page == "🧭 Guided Play":
                     "Captured_Opponent": "Disruption (0/1)",
                 }
             )
-            st.dataframe(df_opts, width="stretch", hide_index=True)
+            st.dataframe(df_opts, use_container_width=True, hide_index=True)
 
     else:
         st.subheader("Step 2 — Enter your move options")
@@ -2534,7 +2536,7 @@ elif page == "🧭 Guided Play":
             view_df = results_df.copy()
             view_df["Winner Probability"] = view_df["Winner Probability"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
             view_df["Non-Winner Probability"] = view_df["Non-Winner Probability"].map(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
-            st.dataframe(view_df, width="stretch", hide_index=True)
+            st.dataframe(view_df, use_container_width=True, hide_index=True)
 
             if mode == "Business scenario (resource allocation)":
                 st.subheader("Downloads")
@@ -2616,7 +2618,7 @@ elif page == "🧭 Guided Play":
                         data=csv_bytes,
                         file_name="business_scenario_predictions.csv",
                         mime="text/csv",
-                        width="stretch",
+                        use_container_width=True,
                     )
                 with dl_right:
                     st.download_button(
@@ -2624,7 +2626,7 @@ elif page == "🧭 Guided Play":
                         data=strategy_text.encode("utf-8"),
                         file_name="business_scenario_strategy_brief.txt",
                         mime="text/plain",
-                        width="stretch",
+                        use_container_width=True,
                     )
             else:
                 st.subheader("Downloads")
@@ -2687,7 +2689,7 @@ elif page == "🧭 Guided Play":
                         data=csv_bytes,
                         file_name="guided_play_predictions.csv",
                         mime="text/csv",
-                        width="stretch",
+                        use_container_width=True,
                     )
                 with dl_right:
                     st.download_button(
@@ -2695,7 +2697,7 @@ elif page == "🧭 Guided Play":
                         data=strategy_text.encode("utf-8"),
                         file_name="guided_play_strategy_brief.txt",
                         mime="text/plain",
-                        width="stretch",
+                        use_container_width=True,
                     )
 
             _show_model_inputs(X_model)
@@ -2739,7 +2741,7 @@ elif page == "🛠 Diagnostics":
         })
         st.write("Missing values (top 20 columns):")
         na_counts = df.isna().sum().sort_values(ascending=False)
-        st.dataframe(na_counts.head(20).rename("na_count"), width="stretch")
+        st.dataframe(na_counts.head(20).rename("na_count"))
 
     st.subheader("Model")
     if model is None:
@@ -2835,7 +2837,7 @@ elif page == "🛠 Diagnostics":
                 show_cols = [c for c in (["Game_ID", "Player"] + base_numeric + ["Is_Winner"]) if c in raw_row.columns]
                 if show_cols:
                     st.caption("Raw row values")
-                    st.dataframe(raw_row[show_cols], width="stretch")
+                    st.dataframe(raw_row[show_cols], use_container_width=True)
 
                 try:
                     raw_cols = ["Game_ID", "Player"] + base_numeric
@@ -2937,8 +2939,7 @@ elif page == "📈 Model Performance":
         st.info("Evaluation unit: final state per Game_ID + Player (one row per player per game).")
     
     st.markdown("---")
-    
-    ### Performance Summary
+
     st.subheader("🎯 Performance Metrics")
 
     report = eval_out.get("classification_report", {})
@@ -2981,8 +2982,7 @@ elif page == "📈 Model Performance":
         )
     
     st.markdown("---")
-    
-    ### Confusion Matrix
+
     st.subheader("🔍 Confusion Matrix")
     cm_data = np.asarray(eval_out.get("confusion_matrix", [[0, 0], [0, 0]]), dtype=int)
 
@@ -3002,33 +3002,35 @@ elif page == "📈 Model Performance":
         yaxis_title="Actual Label",
         height=400
     )
-    st.plotly_chart(fig_cm, width="stretch")
+    st.plotly_chart(fig_cm, use_container_width=True)
 
     with st.expander("Classification report (precision/recall/F1)", expanded=True):
         report_dict = eval_out.get("classification_report", {})
         if isinstance(report_dict, dict):
             report_df = pd.DataFrame(report_dict).T
-            st.dataframe(report_df, width="stretch")
+            st.dataframe(report_df, use_container_width=True)
         else:
             st.info("Classification report not available")
     
     st.markdown("---")
-    
-    ### ROC-AUC Curve
+
     st.subheader("📊 ROC-AUC Performance")
     
-    # Generate sample ROC curve
+    st.caption(
+        "⚠️ The ROC curve shape below is illustrative only. "
+        "Per-threshold FPR/TPR values are not stored in the artifact; "
+        "only the aggregate AUC score shown in the metrics above is exact."
+    )
     fpr = np.linspace(0, 1, 100)
-    # Illustrative ROC curve shape (to avoid implying exact per-threshold curve without stored scores)
     tpr = 1 - (1 - fpr) ** 1.2
 
     auc_label = f"{auc:.3f}" if isinstance(auc, (int, float)) else "N/A"
-    
+
     fig_roc = go.Figure()
     fig_roc.add_trace(go.Scatter(
         x=fpr, y=tpr,
         mode='lines',
-        name=f'Model (AUC = {auc_label})',
+        name=f'Model — illustrative shape (AUC = {auc_label})',
         line=dict(color='blue', width=3)
     ))
     fig_roc.add_trace(go.Scatter(
@@ -3044,7 +3046,7 @@ elif page == "📈 Model Performance":
         height=500,
         hovermode='closest'
     )
-    st.plotly_chart(fig_roc, width="stretch")
+    st.plotly_chart(fig_roc, use_container_width=True)
     
     st.markdown("**ROC-AUC Interpretation:**")
     st.markdown(
@@ -3058,12 +3060,14 @@ elif page == "📈 Model Performance":
     )
     
     st.markdown("---")
-    
-    ### Feature Importance
+
     st.subheader("🎯 Top Feature Importances")
     st.markdown("Features that most influence model predictions:")
-    
-    # Sample feature importances
+    st.caption(
+        "⚠️ These importance scores are reference values from the training notebook. "
+        "Load the production artifact and re-run evaluation to see live importances."
+    )
+
     top_features = {
         'eng_sp_ratio_wm__tok_home__tok_fin': 0.185,
         'eng_sn_inter_wm__pos_a__pos_b': 0.156,
@@ -3084,7 +3088,7 @@ elif page == "📈 Model Performance":
         title="Top 10 Most Important Features",
         labels={'x': 'Importance Score', 'y': 'Feature'}
     )
-    st.plotly_chart(fig_imp, width="stretch")
+    st.plotly_chart(fig_imp, use_container_width=True)
     
     st.markdown("**Key Insight:** Engineered features (with 'eng_' prefix) dominate top importances, validating the feature engineering approach.")
 
@@ -3108,7 +3112,7 @@ def _download_button_for_file(label: str, file_path: str, mime: str, file_name: 
         data=data,
         file_name=file_name or path.name,
         mime=mime,
-        width="stretch",
+        use_container_width=True,
     )
 
 
